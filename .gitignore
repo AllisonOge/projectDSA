@@ -1,0 +1,8 @@
+# test_files
+test_files/
+# all oot modules
+gr-*/
+# __pycache__
+__pycache__
+# .idea/
+.idea/
