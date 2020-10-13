@@ -37,6 +37,8 @@ import time
 import socket
 from pymongo import MongoClient
 
+HEADERSIZE = 10
+
 sys.stderr.write(
     "Warning: this may have issues on some machines+Python version combinations to seg fault due to the callback in bin_statitics.\n\n")
 
@@ -295,7 +297,7 @@ def main_loop(tb):
         try:
             # check for request
             # receive header
-            msglen = mysckt.recv(10)
+            msglen = mysckt.recv(HEADERSIZE)
             # print msglen
             msg = mysckt.recv(int(msglen.decode('utf-8'))) # throw value error when empty
             mysckt.send(msg)
@@ -327,6 +329,18 @@ def main_loop(tb):
             noise_floor_db = 10 * math.log10(min(mod_data) / tb.usrp_rate)
             fmin = bin_freq(bin_start, m.center_freq)
             fmax = bin_freq(bin_stop, m.center_freq)
+            # save channels used
+            if db.get_collection("channels") is None:
+                db.create_collection("channels")
+            if db.get_collection('channels').find_one({'channel.fmin': fmin, 'channel.fmax': fmax, 'channel.bw': tb.usrp_rate}) is None:
+                channel_id = db.get_collection('channels').insert_one({'channel': {'fmin': fmin, 'fmax': fmax, 'bw': tb.usrp_rate, 'counts': 1, 'duty_cycle': 1.0}}).inserted_id
+            else:
+                query = {'channel.fmin': fmin, 'channel.fmax': fmax, 'channel.bw': tb.usrp_rate}
+                channel = db.get_collection('channels').find_one(query)
+                channel_id = channel['_id']
+                channel['channel']['counts'] += 1
+                db.get_collection('channels').update_one(
+                    query, {'$set': {'channel.counts': channel['channel']['counts']}})
             for i_bin in range(bin_start, bin_stop):
                 center_freq = m.center_freq
                 freq = bin_freq(i_bin, center_freq)
@@ -334,12 +348,15 @@ def main_loop(tb):
                 amp_db = 10 * math.log10(mod_data[i_bin] / tb.usrp_rate)
                 power_db = amp_db - noise_floor_db
 
+            # FIXME run on a separate thread as database will grow greatly
             if power_db > tb.squelch_threshold:
                 print datetime.now(), "center_freq", center_freq, "freq", freq, "power_db", power_db, "noise_floor_db", noise_floor_db
                 # save sensor data to database
+                if db.get_collection('sensor') is None:
+                    db.create_collection('sensor')
                 # choose highest signal amplitude
                 db.get_collection('sensor').insert_one(
-                    {'noise_floor': noise_floor_db, 'signal': {'amplitude': amp_db, 'fmin': fmin, 'fmax': fmax},
+                    {'noise_floor': noise_floor_db, 'signal': {'amplitude': amp_db, 'channel': channel_id},
                      'date': datetime.now(), })
 
         except ValueError:

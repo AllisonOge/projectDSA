@@ -3,7 +3,11 @@
 import socket
 import threading
 import time
+from pymongo import MongoClient
 
+myclient = MongoClient('mongodb://127.0.0.1:27017/')
+_db = myclient.projectDSA
+_freq_array = [b'824e6', b'825e6', b'880e6', b'915e6', b'924e6', b'960e6', b'1710e6', b'1980e6', b'1989e6']
 
 def initialization():
     """Performs all kind of socket initialization"""
@@ -20,21 +24,26 @@ def initialization():
     print "Sensing module connected to address", address
     # perform other socket initializations
     return sensing
+def formatmsg(msg):
+    packet = '{length:<10}'.format(length=len(msg)) + msg
+    return packet
 
 def main():
     # application initialization
     print "Application is initializing..."
     sense = initialization()
-    freq_array = [b'905e6', b'880e6', b'915e6', b'924e6', b'989e6']
-    for freq in freq_array:
-        msg = '{length:<10}'.format(length=len(freq)) + freq
+    # FOR TESTING
+    for freq in _freq_array:
+        msg = formatmsg(freq)
         # print msg
         sense.sendall(msg.encode('utf-8'))
         while sense.recv(10) != freq:
             sense.sendall(msg.encode('utf-8'))
     # query database for set of frequency based on time occupancy usage
-    print "Can I do the next thing..."
+    selected_chan = list(_db.channels.aggregate({'$project': {'channel': 1, 'selected': {'$gte': ['$channel.duty_cycle', 0.7]}}}))
     # check if set of channel is not empty
+    if len(selected_chan) != 0:
+        print selected_chan
     # sense selected channels to build prediction database and for free channel
 
     # update database information
