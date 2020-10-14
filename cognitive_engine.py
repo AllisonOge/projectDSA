@@ -3,11 +3,15 @@
 import socket
 import threading
 import time
+import decision_makers
 from pymongo import MongoClient
 
 myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
-_freq_array = [b'824e6', b'825e6', b'880e6', b'915e6', b'924e6', b'960e6', b'1710e6', b'1980e6', b'1989e6']
+_freq_array = [b'825e6', b'830e6', b'837e6', b'840e6', b'849e6', b'900e6', b'908e6', b'924e6', b'930e6', b'1710e6',
+               b'1980e6', b'1989e6']
+_counts = 3
+
 
 def initialization():
     """Performs all kind of socket initialization"""
@@ -24,38 +28,68 @@ def initialization():
     print "Sensing module connected to address", address
     # perform other socket initializations
     return sensing
+
+
 def formatmsg(msg):
     packet = '{length:<10}'.format(length=len(msg)) + msg
     return packet
+
+def txtformat(lnght):
+    fmt = ''
+    if lnght > 1:
+        fmt = 's'
+    return fmt
 
 def main():
     # application initialization
     print "Application is initializing..."
     sense = initialization()
-    # FOR TESTING
-    for freq in _freq_array:
-        msg = formatmsg(freq)
-        # print msg
-        sense.sendall(msg.encode('utf-8'))
-        while sense.recv(10) != freq:
-            sense.sendall(msg.encode('utf-8'))
-    # query database for set of frequency based on time occupancy usage
-    selected_chan = list(_db.channels.aggregate({'$project': {'channel': 1, 'selected': {'$gte': ['$channel.duty_cycle', 0.7]}}}))
-    # check if set of channel is not empty
-    if len(selected_chan) != 0:
-        print selected_chan
-    # sense selected channels to build prediction database and for free channel
+    while True:
+        decision_makers.update()
+        # query database for set of frequency based on time occupancy usage
+        filt = [{'$project': {'channel': 1, 'selected': {'$lte': ['$channel.duty_cycle', 0.7]}}},
+                {'$match': {'selected': True}}]
+        selected_chan = list(_db.get_collection('channels').aggregate(filt))
+        # check if set of channel is not empty
+        if len(selected_chan) != 0:
+            # sense selected channels to build prediction database and for free channel
+            selected_freq = []
+            for i in range(len(selected_chan)):
+                centre_freq = selected_chan[i]['channel']['fmin'] + (
+                        selected_chan[i]['channel']['fmax'] - selected_chan[i]['channel']['fmin']) / 2.0
+                msg = formatmsg(str(centre_freq))
+                # print msg
+                sense.sendall(msg.encode('utf-8'))
+                while sense.recv(len(str(centre_freq))) != str(centre_freq):
+                    sense.sendall(msg.encode('utf-8'))
+                selected_freq.append(centre_freq)
+                # decision maker will return result of sensed channel
+                decision_makers.return_radio_chans(selected_chan[i]['_id'])
+            print len(selected_freq), "channel{} selected".format(txtformat(len(selected_freq)))
+        else:
+            # check if no channel is free
+            # query database for set of frequency based on time occupancy usage
+            print "No channel available!!!"
+            # select radio channel using prediction database
+            # prompt transmission for remaining seconds
+            # check if transmission has ended
+            # halt communication system
+            # if transmission has not ended
+            # sense selected database channels to build prediction database and repeat process of selection
 
-    # update database information
+            i = 0
+            while i < _counts:
+                for freq in _freq_array:
+                    print '\rCreating database from default channel set for {c} number of times... {p}%'.format(c=_counts,
+                                                                                                                p=( 1.0 * i / _counts) * 100),
+                    msg = formatmsg(freq)
+                    # print msg
+                    sense.sendall(msg.encode('utf-8'))
+                    while sense.recv(len(freq)) != freq:
+                        sense.sendall(msg.encode('utf-8'))
+                i += 1
 
-    # check if no channel is free
-    # query database for set of frequency based on time occupancy usage
-    # select radio channel using prediction database
-    # prompt transmission for remaining seconds
-    # check if transmission has ended
-    # halt communication system
-    # if transmission has not ended
-    # sense selected database channels to build prediction database and repeat process of selection
+            print
 
 if __name__ == '__main__':
     main()

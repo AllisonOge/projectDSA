@@ -345,8 +345,9 @@ def main_loop(tb):
                 center_freq = m.center_freq
                 freq = bin_freq(i_bin, center_freq)
                 # power_db = 10*math.log10(mod_data[i_bin]/tb.usrp_rate) - noise_floor_db
-                amp_db = 10 * math.log10(mod_data[i_bin] / tb.usrp_rate)
-                power_db = amp_db - noise_floor_db
+
+            amp_db = 10 * math.log10(max(mod_data) / tb.usrp_rate)
+            power_db = amp_db - noise_floor_db
 
             # FIXME run on a separate thread as database will grow greatly
             if power_db > tb.squelch_threshold:
