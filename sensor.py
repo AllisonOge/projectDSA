@@ -127,7 +127,7 @@ class my_top_block(gr.top_block):
                           default=0.25, metavar="SECS",
                           help="time to dwell (in seconds) at a given frequency [default=%default]")
         parser.add_option("-b", "--channel-bandwidth", type="eng_float",
-                          default=6.25e3, metavar="Hz",
+                          default=None, metavar="Hz",
                           help="channel bandwidth of fft bins in Hz [default=%default]")
         parser.add_option("-l", "--lo-offset", type="eng_float",
                           default=0, metavar="Hz",
@@ -144,8 +144,6 @@ class my_top_block(gr.top_block):
         if len(args) != 1:
             parser.print_help()
             sys.exit(1)
-
-        self.channel_bandwidth = options.channel_bandwidth
 
         self.center_freq = eng_notation.str_to_num(args[0])
         # self.max_freq = eng_notation.str_to_num(args[1])
@@ -182,10 +180,16 @@ class my_top_block(gr.top_block):
 
         self.lo_offset = options.lo_offset
 
-        if options.fft_size is None:
+        if options.channel_bandwidth and options.fft_size is None:
+            self.channel_bandwidth = options.channel_bandwidth
             self.fft_size = int(self.usrp_rate / self.channel_bandwidth)
         else:
-            self.fft_size = options.fft_size
+            if options.fft_size:
+                self.fft_size = options.fft_size
+                self.channel_bandwidth = options.samp_rate / options.fft_size
+            else:
+                print "fft_size or channel_bandwidth is required"
+                sys.exit(1)
 
         self.squelch_threshold = options.squelch_threshold
 
@@ -276,6 +280,7 @@ def main_loop(tb):
     client = MongoClient('mongodb://127.0.0.1:27017/')
     db = client.projectDSA
 
+
     print "Default frequency is ", tb.center_freq
 
     def bin_freq(i_bin, center_freq):
@@ -293,36 +298,34 @@ def main_loop(tb):
     mysckt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     mysckt.connect(('localhost', 12345))
     parse_msg(tb.msgq.delete_head())
+
     while 1:
         try:
             # check for request
             # receive header
             msglen = mysckt.recv(HEADERSIZE)
             # print msglen
-            msg = mysckt.recv(int(msglen.decode('utf-8'))) # throw value error when empty
+            msg = mysckt.recv(int(msglen.decode('utf-8')))  # throw value error when empty
             mysckt.send(msg)
             # ensure you parse only when request is made
-            new_freq = float(msg.decode('utf-8')) # throw value error when empty
+            new_freq = float(msg.decode('utf-8'))  # throw value error when empty
             print "Tuning to new frequency", new_freq
             tb.center_freq = new_freq
+
             # Get the next message sent from the C++ code (blocking call).
             while parse_msg(tb.msgq.delete_head()).center_freq != new_freq:
                 m = parse_msg(tb.msgq.delete_head())
+
+            # # Scanning rate
+            # if timestamp == 0:
+            #     timestamp = time.time()
+            #     centerfreq = m.center_freq
 
             # modified data
             mod_data = list()
             for i in range(tb.fft_size):
                 mod_data.append(m.data[i] / (tb.norm_fac * tb.fft_size))
             mod_data = tuple(mod_data)
-
-            # Scanning rate
-            # if timestamp == 0:
-            # timestamp = time.time()
-            # centerfreq = m.center_freq
-            # if m.center_freq < centerfreq:
-            # sys.stderr.write("scanned %.1fMHz in %.1fs\n" % ((centerfreq - m.center_freq)/1.0e6, time.time() - timestamp))
-            # timestamp = time.time()
-            # centerfreq = m.center_freq
 
             # noise_floor_db = -174 + 10*math.log10(tb.channel_bandwidth)
             # noise_floor_db = 10*math.log10(min(m.data)/tb.usrp_rate)
@@ -332,8 +335,12 @@ def main_loop(tb):
             # save channels used
             if db.get_collection("channels") is None:
                 db.create_collection("channels")
-            if db.get_collection('channels').find_one({'channel.fmin': fmin, 'channel.fmax': fmax, 'channel.bw': tb.usrp_rate}) is None:
-                channel_id = db.get_collection('channels').insert_one({'channel': {'fmin': fmin, 'fmax': fmax, 'bw': tb.usrp_rate, 'counts': 1, 'duty_cycle': 1.0}}).inserted_id
+            if db.get_collection('channels').find_one(
+                    {'channel.fmin': fmin, 'channel.fmax': fmax, 'channel.bw': tb.usrp_rate}) is None:
+                channel_id = db.get_collection('channels').insert_one({'channel': {'fmin': fmin, 'fmax': fmax,
+                                                                                   'bw': tb.usrp_rate, 'counts': 1,
+                                                                                   'duty_cycle': 1.0},
+                                                                       'nselected': 0}).inserted_id
             else:
                 query = {'channel.fmin': fmin, 'channel.fmax': fmax, 'channel.bw': tb.usrp_rate}
                 channel = db.get_collection('channels').find_one(query)
@@ -341,9 +348,9 @@ def main_loop(tb):
                 channel['channel']['counts'] += 1
                 db.get_collection('channels').update_one(
                     query, {'$set': {'channel.counts': channel['channel']['counts']}})
-            for i_bin in range(bin_start, bin_stop):
-                center_freq = m.center_freq
-                freq = bin_freq(i_bin, center_freq)
+            # for i_bin in range(bin_start, bin_stop):
+            #     center_freq = m.center_freq
+            #     freq = bin_freq(i_bin, center_freq)
                 # power_db = 10*math.log10(mod_data[i_bin]/tb.usrp_rate) - noise_floor_db
 
             amp_db = 10 * math.log10(max(mod_data) / tb.usrp_rate)
@@ -351,19 +358,21 @@ def main_loop(tb):
 
             # FIXME run on a separate thread as database will grow greatly
             if power_db > tb.squelch_threshold:
-                print datetime.now(), "center_freq", center_freq, "freq", freq, "power_db", power_db, "noise_floor_db", noise_floor_db
+                print datetime.now(), "center_freq", m.center_freq, "power_db", power_db, "noise_floor_db", noise_floor_db
                 # save sensor data to database
                 if db.get_collection('sensor') is None:
                     db.create_collection('sensor')
+
                 # choose highest signal amplitude
                 db.get_collection('sensor').insert_one(
                     {'noise_floor': noise_floor_db, 'signal': {'amplitude': amp_db, 'channel': channel_id},
-                     'date': datetime.now(), })
+                     'date': datetime.now()})
 
         except ValueError:
             # free message queue till next tune cognitive engine request
             parse_msg(tb.msgq.delete_head())
             pass
+
 
 if __name__ == '__main__':
     t = ThreadClass()
