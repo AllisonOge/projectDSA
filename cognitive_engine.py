@@ -46,6 +46,15 @@ def initialization():
     # perform other socket initializations
     return sensing
 
+def inband_sensing(sense):
+    while 1:
+        for freq in _freq_array:
+            msg = formatmsg(freq)
+            # print msg
+            sense.sendall(msg.encode('utf-8'))
+            while sense.recv(len(freq)) != freq:
+                sense.sendall(msg.encode('utf-8'))
+        decision_makers.update_random()
 
 def formatmsg(msg):
     packet = '{length:<10}'.format(length=len(msg)) + msg
@@ -60,73 +69,87 @@ def txtformat(lnght):
 
 
 def main():
+    _max_duty_cycle = 0.4
     idle = False
+    chan = False
     # application initialization
     print "Application is initializing..."
     sense = initialization()
+    inband_thread = threading.Thread(target=inband_sensing, args=(sense,), name='inband-sensing')
+    inband_thread.start()
     while idle is False:
-
-        while 1:
-            notempty = decision_makers.update()
-            # populate database for the first time
-            if notempty is False:
-                i = 0
-                while i < _counts:
-                    for freq in _freq_array:
-                        msg = formatmsg(freq)
-                        # print msg
-                        sense.sendall(msg.encode('utf-8'))
-                        while sense.recv(len(freq)) != freq:
-                            sense.sendall(msg.encode('utf-8'))
-                    i += 1
-                    print '\rCreating database from default channel set for {c} number of times... {p:.2f}%'.format(
-                        c=_counts,
-                        p=(1.0 * i / _counts) * 100),
-                print
-            # query database for set of frequency based on time occupancy usage
-            # if starting:
-            #     filt = [{'$project': {'channel': 1, 'selected': {'$lte': ['$channel.duty_cycle', 0.7]}}},
-            #             {'$match': {'selected': True}}]
-            #     starting = False
-            # else:
-            #     filt = [{'$project': {'channel': 1, 'selected': {'$gt': ['$nselected', 0]}}},
-            #         {'$match': {'selected': True}}]
-            filt = [{'$project': {'channel': 1, 'selected': {'$lte': ['$channel.duty_cycle', 0.4]}}},
-                    {'$match': {'selected': True}}]
-            selected_chan = list(_db.get_collection('channels').aggregate(filt))
-            # check if set of channel is not empty
-            if len(selected_chan) != 0:
-                print len(selected_chan), "channel{} selected".format(txtformat(len(selected_chan)))
-                # sense selected channels to build prediction database and for free channel
-                selected_freq = []
-                chan_result = []
-                for i in range(len(selected_chan)):
-                    centre_freq = selected_chan[i]['channel']['fmin'] + (
-                            selected_chan[i]['channel']['fmax'] - selected_chan[i]['channel']['fmin']) / 2.0
-                    msg = formatmsg(str(centre_freq))
-                    # print msg
-                    sense.sendall(msg.encode('utf-8'))
-                    while sense.recv(len(str(centre_freq))) != str(centre_freq):
-                        sense.sendall(msg.encode('utf-8'))
-                    selected_freq.append(centre_freq)
-                    # decision maker will return result of sensed channel
-                    chan_result.append(decision_makers.return_radio_chans(selected_chan[i]['_id']))
-                # is a radio channel free
-                try:
-                    chan_result.index('free')
-                    break
-                except ValueError:
-                    pass
-            else:
-                # check if no channel is free
-                print "No channel available!!!"
-                # select radio channel using prediction database
-        # store sensed result for traffic classification and prediction
-        for i in range(len(chan_result)):
-            query = {'$match': {'_id': chan_result[i]['id']}}
-            nselected = _db.get_collection('channels').find_one(query)
-            nselected += 1
-            _db.get_collection('channels').update_one(query, nselected)
+        pass
+        # while not chan:
+        #     notempty = decision_makers.update()
+        #     # populate database for the first time
+        #     if notempty is False:
+        #         i = 0
+        #         while i < _counts:
+        #             for freq in _freq_array:
+        #                 msg = formatmsg(freq)
+        #                 # print msg
+        #                 sense.sendall(msg.encode('utf-8'))
+        #                 while sense.recv(len(freq)) != freq:
+        #                     sense.sendall(msg.encode('utf-8'))
+        #             i += 1
+        #             print '\rCreating database from default channel set for {c} number of times... {p:.2f}%'.format(
+        #                 c=_counts,
+        #                 p=(1.0 * i / _counts) * 100),
+        #         decision_makers.update()
+        #         print
+        #     # query database for set of frequency based on time occupancy usage
+        #     # if starting:
+        #     #     filt = [{'$project': {'channel': 1, 'selected': {'$lte': ['$channel.duty_cycle', 0.7]}}},
+        #     #             {'$match': {'selected': True}}]
+        #     #     starting = False
+        #     # else:
+        #     #     filt = [{'$project': {'channel': 1, 'selected': {'$gt': ['$nselected', 0]}}},
+        #     #         {'$match': {'selected': True}}]
+        #     filt = [{'$project': {'channel': 1, 'selected': {'$lte': ['$channel.duty_cycle', _max_duty_cycle]}}},
+        #             {'$match': {'selected': True}}]
+        #     selected_chan = list(_db.get_collection('channels').aggregate(filt))
+        #     # check if set of channel is not empty
+        #     if len(selected_chan) != 0:
+        #         print len(selected_chan), "channel{} selected".format(txtformat(len(selected_chan)))
+        #         # sense selected channels to build prediction database and for free channel
+        #         selected_freq = []
+        #         chan_result = []
+        #         for i in range(len(selected_chan)):
+        #             centre_freq = selected_chan[i]['channel']['fmin'] + (
+        #                     selected_chan[i]['channel']['fmax'] - selected_chan[i]['channel']['fmin']) / 2.0
+        #             msg = formatmsg(str(centre_freq))
+        #             # print msg
+        #             sense.sendall(msg.encode('utf-8'))
+        #             while sense.recv(len(str(centre_freq))) != str(centre_freq):
+        #                 sense.sendall(msg.encode('utf-8'))
+        #             selected_freq.append(centre_freq)
+        #             # decision maker will return result of sensed channel
+        #             chan_result.append(decision_makers.return_radio_chans(selected_chan[i]['_id']))
+        #         # is a radio channel free
+        #         print chan_result
+        #         for i in range(len(chan_result)):
+        #             try:
+        #                 if chan_result[i]['state'] == 'free':
+        #                     chan = True
+        #                     break
+        #             except KeyError:
+        #                 pass
+        #     else:
+        #         # check if no channel is free
+        #         print "No channel available!!!"
+        #         if _max_duty_cycle < 1:
+        #             _max_duty_cycle += 0.1
+        #             print 'Threshold for first set of channels is ', _max_duty_cycle
+        #         else:
+        #             print "Query entire database channel set!!!"
+        #         # select radio channel using prediction database
+        # # store sensed result for traffic classification and prediction
+        # for i in range(len(chan_result)):
+        #     print chan_result[i]['id']
+        #     query = {'$match': {'_id': chan_result[i]['id']}}
+        #     nselected = _db.get_collection('channels').find_one(query['$match'])
+        #     nselected += 1
+        #     _db.get_collection('channels').update_one(query, nselected)
         # decide and use prediction method for the classes of traffic
 
         # prompt transmission for remaining seconds

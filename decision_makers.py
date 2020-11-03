@@ -1,6 +1,7 @@
 # DECISION MAKERS.py
 from pymongo import MongoClient
 import sys
+import datetime
 
 # database
 myclient = MongoClient('mongodb://127.0.0.1:27017/')
@@ -9,7 +10,7 @@ _db = myclient.projectDSA
 _threshold_db = 21
 
 def update():
-    # create time occupancy database from sensor data
+    """in-band sequence generator for classification"""
     channels = list(_db.get_collection('channels').find())
     if len(channels) > 0:
         print "Updating the traffic estimate for all channels"
@@ -31,6 +32,37 @@ def update():
     else:
         print "Channel is empty, could not update occupancy!!!"
         return False
+
+def update_random():
+    """compute the median time availability"""
+    channels = list(_db.get_collection('channels').find())
+    if len(channels) > 0:
+        print "Updating the traffic estimate for all channels"
+        for channel in channels:
+            filt = [
+                {'$match': {'signal.channel': channel['_id']}},
+                {'$project': {
+                    'date': 1,
+                    'idle': {'$lt': [{'$subtract': ['$signal.amplitude', '$noise_floor']}, _threshold_db]}}}]
+            channel_seq = list(_db.get_collection("sensor").aggregate(filt))
+            idle_start = 0
+            idle_time = 0
+            idle_time_stats = []
+            # FIXME convert datetime to float seconds
+            for i in range(len(channel_seq)):
+                if channel_seq[i]['idle'] == True and idle_start == 0:
+                    idle_start = channel_seq[i]['date']
+                    print idle_start
+                elif channel_seq[i]['idle'] == True and idle_start > 0:
+                    idle_time = channel_seq[i]['date'] - idle_start
+                    print idle_time
+                elif channel_seq[i]['idle'] == False and idle_time > 0:
+                    idle_time_stats.append(idle_time)
+                    idle_start = 0
+                else:
+                    print 'you missed this condition'
+
+
 
 def return_radio_chans(chan_id):
     print "Checking result of sensed radio channel", chan_id
