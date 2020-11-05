@@ -12,14 +12,16 @@ IP_ADDRESS = '127.0.0.1'
 SENSOR_PORT = 12345
 RF_PORT = 12347
 
+_MAX_DUTY_CYCLE = 0.4
+
 def get_freq():
     freqs = []
-    # start_freq = 898.25e6
-    # stop_freq = 901.75e6
-    # nchan = 7
-    start_freq = 900e6
-    stop_freq = 910e6
-    nchan = 9
+    start_freq = 898.25e6
+    stop_freq = 901.75e6
+    nchan = 7
+    # start_freq = 900e6
+    # stop_freq = 910e6
+    # nchan = 9
     step = (stop_freq - start_freq) / nchan
     for i in range(nchan):
         if i == 0:
@@ -91,12 +93,12 @@ def select_max(prev, curr):
 
 
 def select_best(obj):
-    if obj['card']['best_channel'] == 1:
+    if obj['card']['best_channel'] > 0.5:
         return obj
 
 
 def main():
-    _max_duty_cycle = 0.4
+    _max_duty_cycle = _MAX_DUTY_CYCLE
     idle = False
     chan = False
     pause = False
@@ -169,12 +171,10 @@ def main():
                 # is a radio channel free
                 # print chan_result
                 for i in range(len(chan_result)):
-                    try:
-                        if chan_result[i]['state'] == 'free':
-                            chan = True
-                            break
-                    except KeyError:
-                        pass
+                    if chan_result[i]['state'] == 'free':
+                        chan = True
+                        break
+                    decision_makers.gen_class_est()
             else:
                 # check if no channel is free
                 print "No channel available!!!"
@@ -187,6 +187,7 @@ def main():
                     print "Querying the entire database channel set!!!"
                 # select radio channel using prediction database
 
+        _max_duty_cycle = _MAX_DUTY_CYCLE
         # traffic classification and prediction
         odds = []
         idle_times = []
@@ -195,13 +196,14 @@ def main():
             query = {'$match': {'channel_id': chan_result[i]['id']}}
             chan_distro = _db.get_collection('time_distro').find_one(query['$match'])
             # print chan_distro
-            if chan_distro['traffic_class'] == 'periodic':
+            if chan_distro['traffic_class'] == 'PERIODIC':
                 idle_time = _db.get_collection('time_distro').find_one({'channel_id': chan_result[i]['id']})
                 idle_times.append(
                     {'idle_time': idle_time['mean_it'] * idle_time['period'], 'chan_id': chan_result[i]['id']})
             else:
                 card = _db.get_collection('channels').find_one({'_id': chan_result[i]['id']})
                 odds.append({'card': card, 'chan_id': chan_result[i]['id']})
+                print odds
         # select longest idle time or any best channel
         if len(idle_times) > 0:
             print idle_times
@@ -228,6 +230,9 @@ def main():
         # check if transmission has ended
 
     # halt communication system
+    if socket.error or KeyboardInterrupt:
+        _db.get_collection('sensor').copy_to('long_term')
+        _db.get_collection('sensor').drop()
 
 
 if __name__ == '__main__':
