@@ -38,6 +38,8 @@ import socket
 from pymongo import MongoClient
 
 HEADERSIZE = 10
+IP_ADDRESS = '127.0.0.1'
+SENSOR_PORT = 12345
 
 sys.stderr.write(
     "Warning: this may have issues on some machines+Python version combinations to seg fault due to the callback in bin_statitics.\n\n")
@@ -279,7 +281,7 @@ def main_loop(tb):
     # database initialization
     client = MongoClient('mongodb://127.0.0.1:27017/')
     db = client.projectDSA
-
+    in_band = True
 
     print "Default frequency is ", tb.center_freq
 
@@ -296,18 +298,22 @@ def main_loop(tb):
 
     # create a INET, STREAMing socket
     mysckt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    mysckt.connect(('localhost', 12345))
+    mysckt.connect((IP_ADDRESS, SENSOR_PORT))
     parse_msg(tb.msgq.delete_head())
 
     while 1:
         try:
             # check for request
+            # FIXME distinguish between in-band sensing and others to save results separately
             # receive header
             msglen = mysckt.recv(HEADERSIZE)
             # print msglen
             msg = mysckt.recv(int(msglen.decode('utf-8')))  # throw value error when empty
             mysckt.send(msg)
             # ensure you parse only when request is made
+            if msg == 'check':
+                in_band = False
+                msg = ''
             new_freq = float(msg.decode('utf-8'))  # throw value error when empty
             print "Tuning to new frequency", new_freq
             tb.center_freq = new_freq
@@ -339,8 +345,8 @@ def main_loop(tb):
                     {'channel.fmin': fmin, 'channel.fmax': fmax, 'channel.bw': tb.usrp_rate}) is None:
                 channel_id = db.get_collection('channels').insert_one({'channel': {'fmin': fmin, 'fmax': fmax,
                                                                                    'bw': tb.usrp_rate, 'counts': 1,
-                                                                                   'duty_cycle': 1.0},
-                                                                       'nselected': 0}).inserted_id
+                                                                                   'occ_estimate': 1.0},
+                                                                       'best_channel': 0}).inserted_id
             else:
                 query = {'channel.fmin': fmin, 'channel.fmax': fmax, 'channel.bw': tb.usrp_rate}
                 channel = db.get_collection('channels').find_one(query)
@@ -351,7 +357,7 @@ def main_loop(tb):
             # for i_bin in range(bin_start, bin_stop):
             #     center_freq = m.center_freq
             #     freq = bin_freq(i_bin, center_freq)
-                # power_db = 10*math.log10(mod_data[i_bin]/tb.usrp_rate) - noise_floor_db
+            # power_db = 10*math.log10(mod_data[i_bin]/tb.usrp_rate) - noise_floor_db
 
             amp_db = 10 * math.log10(max(mod_data) / tb.usrp_rate)
             power_db = amp_db - noise_floor_db
@@ -366,7 +372,8 @@ def main_loop(tb):
                 # choose highest signal amplitude
                 db.get_collection('sensor').insert_one(
                     {'noise_floor': noise_floor_db, 'signal': {'amplitude': amp_db, 'channel': channel_id},
-                     'date': datetime.now()})
+                     'date': datetime.now(), 'in_band': in_band})
+                in_band = True
 
         except ValueError:
             # free message queue till next tune cognitive engine request
