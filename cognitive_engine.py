@@ -7,18 +7,18 @@ import numpy as np
 import decision_makers
 from pymongo import MongoClient
 
-
-IP_ADDRESS = '127.0.0.1'
+IP_ADDRESS = '10.0.0.1'
 SENSOR_PORT = 12345
 RF_PORT = 12347
 
 _MAX_DUTY_CYCLE = 0.4
 
+
 def get_freq():
     freqs = []
-    start_freq = 898.25e6
-    stop_freq = 901.75e6
-    nchan = 7
+    start_freq = 898.5e6
+    stop_freq = 904.5e6
+    nchan = 6
     # start_freq = 900e6
     # stop_freq = 910e6
     # nchan = 9
@@ -177,8 +177,8 @@ def main():
                     decision_makers.gen_class_est()
             else:
                 # check if no channel is free
-                print "No channel available!!!"
-                print 'previous threshold is ', _max_duty_cycle,
+                print "No channel available!!!",
+                # print 'previous threshold is ', _max_duty_cycle,
                 if _max_duty_cycle < 1.0:
                     # increase by 10%
                     _max_duty_cycle += 0.1
@@ -225,15 +225,20 @@ def main():
         else:
             break
 
-
         # prompt transmission for remaining seconds
         # check if transmission has ended
 
     # halt communication system
-    if socket.error or KeyboardInterrupt:
-        _db.get_collection('sensor').copy_to('long_term')
-        _db.get_collection('sensor').drop()
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except socket.error or KeyboardInterrupt:
+        if _db.get_collection('long_term') is None:
+            _db.get_collection('sensor').rename('long_term')
+        else:
+            _db.get_collection('long_term').insert_many(list(_db.get_collection('sensor').find()))
+        # _db.get_collection('sensor').drop()
+        _db.get_collection('time_distro').drop()
+        _db.get_collection('channels').drop()

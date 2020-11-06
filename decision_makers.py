@@ -8,7 +8,7 @@ import datetime
 myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
 
-_THRESHOLD_DB = 12
+_THRESHOLD_DB = 21
 _SAMPLE_LEN = 12
 _TRAFFIC_CLASS = 'UNKNOWN'
 

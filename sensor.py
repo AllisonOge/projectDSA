@@ -38,7 +38,7 @@ import socket
 from pymongo import MongoClient
 
 HEADERSIZE = 10
-IP_ADDRESS = '127.0.0.1'
+IP_ADDRESS = '10.0.0.1'
 SENSOR_PORT = 12345
 
 sys.stderr.write(
