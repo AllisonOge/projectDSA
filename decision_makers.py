@@ -197,18 +197,13 @@ def update_random():
         return False
 
 
-def return_radio_chans(chan_id):
-    # print "Checking result of sensed radio channel", chan_id
-    filt = [
-        {'$match': {'signal.channel': chan_id}},
-        {'$project': {'busy': {'$gte': [{'$subtract': ['$signal.amplitude', '$noise_floor']}, _THRESHOLD_DB]}}}]
-    chan = list(_db.get_collection('sensor').aggregate(filt)).pop(-1)
-    print 'is channel busy? ', chan['busy']
-    if chan['busy'] is True:
+def return_radio_chans(result):
+    print 'is channel busy? ', result['busy']
+    if result['busy'] is True:
         state = 'busy'
     else:
         state = 'free'
     return {
-        'id': chan_id,
+        'id': result['_id'],
         'state': state
     }

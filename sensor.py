@@ -36,6 +36,8 @@ from datetime import datetime
 import time
 import socket
 from pymongo import MongoClient
+import pickle
+import utils
 
 HEADERSIZE = 10
 IP_ADDRESS = '10.0.0.1'
@@ -373,6 +375,10 @@ def main_loop(tb):
                 db.get_collection('sensor').insert_one(
                     {'noise_floor': noise_floor_db, 'signal': {'amplitude': amp_db, 'channel': channel_id},
                      'date': datetime.now(), 'in_band': in_band})
+                if in_band:
+                    msg = utils.formatmsg(pickle.dumps({'noise_floor': noise_floor_db, 'signal': {'amplitude': amp_db, 'channel': channel_id},
+                     'date': datetime.now(), 'in_band': in_band}))
+                    mysckt.send(msg.encode('utf-8'))
                 in_band = True
 
         except ValueError:

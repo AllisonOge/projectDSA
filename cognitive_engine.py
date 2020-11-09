@@ -4,6 +4,7 @@ import socket
 import threading
 import time
 import numpy as np
+import utils
 import decision_makers
 from pymongo import MongoClient
 
@@ -36,33 +37,39 @@ myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
 _freq_array = get_freq()
 
-_counts = 12
+_DEFAULT_WAIT_TIME = 2
+HEADERSIZE = 10
+
+# _counts = 12
 
 
 def initialization():
     """Performs all kind of socket initialization"""
     # create a server INET, STREAMing socket for sensing process
     sensingsckt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # rf_frontend = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    rf_frontendsckt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # bind to sensing socket port
     sensingsckt.bind((IP_ADDRESS, SENSOR_PORT))
     # bind to rf frontend socket port
-    # rf_frontend.bind((IP_ADDRESS, RF_PORT))
+    rf_frontendsckt.bind((IP_ADDRESS, RF_PORT))
     # listen for connection
     sensingsckt.listen(1)
+    rf_frontendsckt.listen(1)
     # accept sensing connection
     print "Waiting for sensor to connect..."
     (sensing, address) = sensingsckt.accept()
+    print "Waiting for rf-frontend to connect..."
+    (rf_frontend, address2) = rf_frontendsckt.accept()
     print "sensor is connected to address", address
     # perform other socket initializations
-    return sensing
+    return sensing, rf_frontend
 
 
 def inband_sensing(sense, stop):
     while 1:
         timestamp = time.time()
         for freq in _freq_array:
-            msg = formatmsg(freq)
+            msg = utils.formatmsg(freq)
             # print msg
             sense.sendall(msg.encode('utf-8'))
             while sense.recv(len(freq)) != freq:
@@ -71,12 +78,6 @@ def inband_sensing(sense, stop):
         decision_makers.update_random()
         if stop():
             break
-
-
-def formatmsg(msg):
-    packet = '{length:<10}'.format(length=len(msg)) + msg
-    return packet
-
 
 def txtformat(lnght):
     fmt = ''
@@ -104,10 +105,10 @@ def main():
     pause = False
     # application initialization
     print "Application is initializing..."
-    sense = initialization()
+    sense, rf_frontend = initialization()
     inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause], name='inband-sensing')
     inband_thread.start()
-    print 'stated in-band sensing'
+    # print 'stated in-band sensing'
     while idle is False:
         while not chan:
             notempty = decision_makers.gen_class_est()
@@ -147,7 +148,7 @@ def main():
                 # FIXME move short term database to storage to reinitialize prediction
                 for i in range(len(selected_chan)):
                     print 'sending prompt...'
-                    msg = formatmsg('check')
+                    msg = utils.formatmsg('check')
                     # print msg
                     sense.sendall(msg.encode('utf-8'))
                     while sense.recv(len('check')) != 'check':
@@ -155,14 +156,20 @@ def main():
                     print 'prompt sent!'
                     centre_freq = selected_chan[i]['channel']['fmin'] + (
                             selected_chan[i]['channel']['fmax'] - selected_chan[i]['channel']['fmin']) / 2.0
-                    msg = formatmsg(str(centre_freq))
+                    msg = utils.formatmsg(str(centre_freq))
                     # print msg
                     sense.sendall(msg.encode('utf-8'))
                     while sense.recv(len(str(centre_freq))) != str(centre_freq):
                         sense.sendall(msg.encode('utf-8'))
                     selected_freq.append(centre_freq)
                     # decision maker will return result of sensed channel
-                    chan_result.append(decision_makers.return_radio_chans(selected_chan[i]['_id']))
+                    msglen = sense.recv(HEADERSIZE)
+                    while len(msglen) > 0:
+                        msg = sense.recv(int(msglen.decode('utf-8')))
+                        print msg
+                        sense.sendall(msg)
+                        msglen = b''
+                    chan_result.append(decision_makers.return_radio_chans(msg))
                 pause = False
                 inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause],
                                                  name='inband-sensing')
@@ -174,12 +181,13 @@ def main():
                     if chan_result[i]['state'] == 'free':
                         chan = True
                         break
-                    decision_makers.gen_class_est()
+                decision_makers.gen_class_est()
             else:
                 # check if no channel is free
                 print "No channel available!!!",
                 # print 'previous threshold is ', _max_duty_cycle,
                 if _max_duty_cycle < 1.0:
+                    print _max_duty_cycle == 1.0
                     # increase by 10%
                     _max_duty_cycle += 0.1
                     print 'threshold for first set of channels is now ', _max_duty_cycle
@@ -203,17 +211,21 @@ def main():
             else:
                 card = _db.get_collection('channels').find_one({'_id': chan_result[i]['id']})
                 odds.append({'card': card, 'chan_id': chan_result[i]['id']})
-                print odds
+                # print odds
         # select longest idle time or any best channel
         if len(idle_times) > 0:
             print idle_times
-            chan_id = reduce(select_max, idle_times)['chan_id']
+            chan_id = reduce(select_max, idle_times)
+            selected_idle_time = chan_id['idle_time']
+            chan_id = chan_id['chan_id']
         if 'chan_id' not in locals():
             if len(odds) > 0:
                 result = map(select_best, odds)
                 for i in range(len(result)):
                     if result[i] is not None:
                         chan_id = result[i]['chan_id']
+                        selected_idle_time = _DEFAULT_WAIT_TIME
+                        break
                     else:
                         chan_id = None
             else:
@@ -223,22 +235,41 @@ def main():
         if chan_id is None:
             chan = False
         else:
-            break
-
-        # prompt transmission for remaining seconds
-        # check if transmission has ended
-
+            # prompt transmission for remaining seconds
+            channel = _db.get_collection('channels').find_one({'_id': chan_id})
+            new_freq = channel['channel']['fmin'] + (
+                    channel['channel']['fmax'] - channel['channel']['fmin']) / 2.0
+            msg = utils.formatmsg('NEW_FREQ={}'.format(new_freq))
+            rf_frontend.send(msg.encode('utf-8'))
+            while rf_frontend.recv(len(msg)) != msg:
+                rf_frontend.send(msg.encode('utf-8'))
+            timestamp = time.time()
+            while (time.time() - timestamp) < selected_idle_time:
+                pass
+            msg = utils.formatmsg('STOP_COMM')
+            rf_frontend.send(msg.encode('utf-8'))
+            while rf_frontend.recv(len(msg)) != msg:
+                rf_frontend.send(msg.encode('utf-8'))
+            # check if transmission has ended
+            msglen = rf_frontend.recv(HEADERSIZE)
+            if len(msglen) > 0:
+                msg = rf_frontend.recv(int(msglen.decode('utf-8')))
+                if msg == 'EOF':
+                    idle = True
     # halt communication system
+    print "End of Communication..., DONE!"
 
 
 if __name__ == '__main__':
     try:
         main()
-    except socket.error or KeyboardInterrupt:
+    except socket.error or KeyboardInterrupt, e:
+        print e
         if _db.get_collection('long_term') is None:
             _db.get_collection('sensor').rename('long_term')
         else:
-            _db.get_collection('long_term').insert_many(list(_db.get_collection('sensor').find()))
-        # _db.get_collection('sensor').drop()
-        _db.get_collection('time_distro').drop()
-        _db.get_collection('channels').drop()
+            if len(list(_db.get_collection('sensor').find())) > 0:
+                _db.get_collection('long_term').insert_many(list(_db.get_collection('sensor').find()))
+        _db.get_collection('sensor').drop()
+        # _db.get_collection('time_distro').drop()
+        # _db.get_collection('channels').drop()
