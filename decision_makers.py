@@ -1,8 +1,6 @@
 # DECISION MAKERS.py
 from pymongo import MongoClient
-import sys
 import numpy as np
-import datetime
 
 # database
 myclient = MongoClient('mongodb://127.0.0.1:27017/')
@@ -85,7 +83,11 @@ def gen_class_est():
                 {'$match': {'signal.channel': channel['_id']}},
                 {'$project': {
                     'busy': {'$gte': [{'$subtract': ['$signal.amplitude', '$noise_floor']}, _THRESHOLD_DB]}}}]
-            bit_seq = list(_db.get_collection("sensor").aggregate(filt))
+            if _db.get_collection('long_term') is not None:
+                bit_seq = list(_db.get_collection('long_term').aggregate(filt)) + list(
+                    _db.get_collection("sensor").aggregate(filt))
+            else:
+                bit_seq = list(_db.get_collection("sensor").aggregate(filt))
             # classify bit sequence
             bit_seq = map(gen_seq, bit_seq)
             # print bit_seq
@@ -139,7 +141,7 @@ def update_random():
     channels = list(_db.get_collection('channels').find())
     if len(channels) > 0:
         print "idle time prediction of all channels"
-        all_idle_times = []
+        all_idle_times = np.array([])
         for channel in channels:
             filt = [
                 {'$match': {'signal.channel': channel['_id'], 'in_band': True}},
@@ -149,30 +151,30 @@ def update_random():
             channel_seq = list(_db.get_collection("sensor").aggregate(filt))
             idle_start = 0
             idle_time = 0
-            idle_time_stats = []
+            idle_time_stats = np.array([])
             for i in range(len(channel_seq)):
                 if channel_seq[i]['idle'] == True and idle_start == 0:
                     idle_start = channel_seq[i]['date']
                 elif channel_seq[i]['idle'] == True and type(idle_start) != int:
                     idle_time = (channel_seq[i]['date'] - idle_start).total_seconds()
                 elif channel_seq[i]['idle'] == False and idle_time > 0:
-                    idle_time_stats.append(idle_time)
+                    idle_time_stats = np.append(idle_time_stats, idle_time)
                     idle_start = 0
                 # else:
                 #     print 'you missed this condition'
-            idle_time_stats.append(idle_time)
+            idle_time_stats = np.append(idle_time_stats, idle_time)
             for i in range(len(idle_time_stats)):
-                all_idle_times.append(idle_time_stats[i])
+                all_idle_times = np.append(all_idle_times, idle_time_stats[i])
             # save to database
             if _db.get_collection("time_distro") is None:
                 _db.create_collection("time_distro")
             if _db.get_collection("time_distro").find_one({'channel_id': channel['_id']}) is None:
                 _db.get_collection("time_distro").insert_one(
-                    {'channel_id': channel['_id'], 'idle_time_stats': idle_time_stats[:-2],
+                    {'channel_id': channel['_id'], 'idle_time_stats': idle_time_stats.tolist()[:-2],
                      'mean_it': float(np.average(idle_time_stats)), 'traffic_class': _TRAFFIC_CLASS})
             else:
                 _db.get_collection("time_distro").update_one({'channel_id': channel['_id']},
-                                                             {'$set': {'idle_time_stats': idle_time_stats,
+                                                             {'$set': {'idle_time_stats': idle_time_stats.tolist(),
                                                                        'mean_it': float(np.average(idle_time_stats))}})
             # get total idle time
             total_idle_time = reduce(flatten, idle_time_stats)
@@ -183,7 +185,7 @@ def update_random():
             median_time = sorted(all_idle_times)[ind]
             # print all_idle_times, median_time
             for i in range(len(idle_time_stats)):
-                if idle_time_stats[i] > median_time:
+                if idle_time_stats[i] >= median_time:
                     idle_best += idle_time_stats[i]
             if total_idle_time != 0:
                 time_occ = idle_best / total_idle_time
@@ -198,12 +200,13 @@ def update_random():
 
 
 def return_radio_chans(result):
-    print 'is channel busy? ', result['busy']
-    if result['busy'] is True:
+    diff = result['signal']['amplitude'] - result['noise_floor']
+    if diff >= _THRESHOLD_DB:
         state = 'busy'
     else:
         state = 'free'
+    print 'Channel state ', state
     return {
-        'id': result['_id'],
+        'id': result['signal']['channel'],
         'state': state
     }

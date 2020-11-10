@@ -375,10 +375,14 @@ def main_loop(tb):
                 db.get_collection('sensor').insert_one(
                     {'noise_floor': noise_floor_db, 'signal': {'amplitude': amp_db, 'channel': channel_id},
                      'date': datetime.now(), 'in_band': in_band})
-                if in_band:
-                    msg = utils.formatmsg(pickle.dumps({'noise_floor': noise_floor_db, 'signal': {'amplitude': amp_db, 'channel': channel_id},
-                     'date': datetime.now(), 'in_band': in_band}))
-                    mysckt.send(msg.encode('utf-8'))
+                if in_band is False:
+                    payload = pickle.dumps({'noise_floor': noise_floor_db, 'signal': {'amplitude': amp_db, 'channel': channel_id},
+                     'date': datetime.now(), 'in_band': in_band})
+                    msg = utils.formatmsg(payload)
+                    # print msg
+                    mysckt.sendall(msg.encode('utf-8'))
+                    while mysckt.recv(len(payload)) != payload.encode('utf-8'):
+                        mysckt.sendall(msg.encode('utf-8'))
                 in_band = True
 
         except ValueError:
