@@ -6,7 +6,7 @@ import numpy as np
 myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
 
-_THRESHOLD_DB = 21
+_THRESHOLD_DB = 12
 _SAMPLE_LEN = 12
 _TRAFFIC_CLASS = 'UNKNOWN'
 
@@ -54,11 +54,12 @@ class TrafficClassification:
         if self.tau_ave == self.tau_max:
             print "Traffic is periodic with period ", self.tau_max
             return 'PERIODIC', self.tau_max
-        elif self.std < 2 * self.tau_ave:
+        elif self.std < 3 * self.tau_ave:
             print "Traffic is periodic with period ", int(self.tau_ave)
             return 'PERIODIC', int(self.tau_ave)
         else:
             # print "Traffic is stochastic"
+            # print self.tau_ave, self.std, self.tau_max
             return 'STOCHASTIC', None
 
 
@@ -77,7 +78,7 @@ def gen_class_est():
     """in-band sequence generator, classification and occupancy estimation"""
     channels = list(_db.get_collection('channels').find())
     if len(channels) > 0:
-        print "Updating the traffic estimate for all channels"
+        # print "Updating the traffic estimate for all channels"
         for channel in channels:
             filt = [
                 {'$match': {'signal.channel': channel['_id']}},
@@ -92,6 +93,7 @@ def gen_class_est():
             bit_seq = map(gen_seq, bit_seq)
             # print bit_seq
             if len(bit_seq) >= _SAMPLE_LEN:
+                period = 1.0
                 if len(bit_seq) % _SAMPLE_LEN == 0:
                     # print "Length of bit sequence", len(bit_seq)
                     for i in range(len(bit_seq) // _SAMPLE_LEN):
@@ -106,7 +108,7 @@ def gen_class_est():
             else:
                 # default classifications
                 traffic_class = 'UNKNOWN'
-                period = 0
+                period = 0.0
 
             result = map(lambda bit: bit == 1, bit_seq)
             spc = 0
@@ -140,7 +142,7 @@ def update_random():
     """predict best 2 channels out of 3"""
     channels = list(_db.get_collection('channels').find())
     if len(channels) > 0:
-        print "idle time prediction of all channels"
+        # print "idle time prediction of all channels"
         all_idle_times = np.array([])
         for channel in channels:
             filt = [
@@ -200,7 +202,7 @@ def update_random():
 
 
 def return_radio_chans(result):
-    diff = result['signal']['amplitude'] - result['noise_floor']
+    diff = float(result['signal']['amplitude']) - float(result['noise_floor'])
     if diff >= _THRESHOLD_DB:
         state = 'busy'
     else:

@@ -321,7 +321,9 @@ def main_loop(tb):
             tb.center_freq = new_freq
 
             # Get the next message sent from the C++ code (blocking call).
-            while parse_msg(tb.msgq.delete_head()).center_freq != new_freq:
+            m = parse_msg(tb.msgq.delete_head())
+
+            while m.center_freq != new_freq:
                 m = parse_msg(tb.msgq.delete_head())
 
             # # Scanning rate
@@ -329,61 +331,63 @@ def main_loop(tb):
             #     timestamp = time.time()
             #     centerfreq = m.center_freq
 
-            # modified data
-            mod_data = list()
-            for i in range(tb.fft_size):
-                mod_data.append(m.data[i] / (tb.norm_fac * tb.fft_size))
-            mod_data = tuple(mod_data)
+            if m.center_freq == new_freq:
+                # modified data
+                mod_data = list()
+                for i in range(bin_start, bin_stop):
+                    mod_data.append(m.data[i] / (tb.norm_fac * tb.fft_size))
+                mod_data = tuple(mod_data)
 
-            # noise_floor_db = -174 + 10*math.log10(tb.channel_bandwidth)
-            # noise_floor_db = 10*math.log10(min(m.data)/tb.usrp_rate)
-            noise_floor_db = 10 * math.log10(min(mod_data) / tb.usrp_rate)
-            fmin = bin_freq(bin_start, m.center_freq)
-            fmax = bin_freq(bin_stop, m.center_freq)
-            # save channels used
-            if db.get_collection("channels") is None:
-                db.create_collection("channels")
-            if db.get_collection('channels').find_one(
-                    {'channel.fmin': fmin, 'channel.fmax': fmax, 'channel.bw': tb.usrp_rate}) is None:
-                channel_id = db.get_collection('channels').insert_one({'channel': {'fmin': fmin, 'fmax': fmax,
-                                                                                   'bw': tb.usrp_rate, 'counts': 1,
-                                                                                   'occ_estimate': 1.0},
-                                                                       'best_channel': 0}).inserted_id
-            else:
-                query = {'channel.fmin': fmin, 'channel.fmax': fmax, 'channel.bw': tb.usrp_rate}
-                channel = db.get_collection('channels').find_one(query)
-                channel_id = channel['_id']
-                channel['channel']['counts'] += 1
-                db.get_collection('channels').update_one(
-                    query, {'$set': {'channel.counts': channel['channel']['counts']}})
-            # for i_bin in range(bin_start, bin_stop):
-            #     center_freq = m.center_freq
-            #     freq = bin_freq(i_bin, center_freq)
-            # power_db = 10*math.log10(mod_data[i_bin]/tb.usrp_rate) - noise_floor_db
+                # noise_floor_db = -174 + 10*math.log10(tb.channel_bandwidth)
+                noise_floor_db = 10 * math.log10(min(m.data) / (tb.norm_fac * tb.fft_size * tb.usrp_rate))
+                # noise_floor_db = 10 * math.log10(min(mod_data) / tb.usrp_rate)
+                fmin = bin_freq(bin_start, m.center_freq)
+                fmax = bin_freq(bin_stop, m.center_freq)
+                # save channels used
+                if db.get_collection("channels") is None:
+                    db.create_collection("channels")
+                if db.get_collection('channels').find_one(
+                        {'channel.fmin': fmin, 'channel.fmax': fmax, 'channel.bw': tb.usrp_rate}) is None:
+                    channel_id = db.get_collection('channels').insert_one({'channel': {'fmin': fmin, 'fmax': fmax,
+                                                                                       'bw': tb.usrp_rate, 'counts': 1,
+                                                                                       'occ_estimate': 1.0},
+                                                                           'best_channel': 0}).inserted_id
+                else:
+                    query = {'channel.fmin': fmin, 'channel.fmax': fmax, 'channel.bw': tb.usrp_rate}
+                    channel = db.get_collection('channels').find_one(query)
+                    channel_id = channel['_id']
+                    channel['channel']['counts'] += 1
+                    db.get_collection('channels').update_one(
+                        query, {'$set': {'channel.counts': channel['channel']['counts']}})
+                # for i_bin in range(bin_start, bin_stop):
+                #     center_freq = m.center_freq
+                #     freq = bin_freq(i_bin, center_freq)
+                # power_db = 10*math.log10(mod_data[i_bin]/tb.usrp_rate) - noise_floor_db
 
-            amp_db = 10 * math.log10(max(mod_data) / tb.usrp_rate)
-            power_db = amp_db - noise_floor_db
+                amp_db = 10 * math.log10(max(mod_data) / tb.usrp_rate)
+                power_db = amp_db - noise_floor_db
 
-            # FIXME run on a separate thread as database will grow greatly
-            if power_db > tb.squelch_threshold:
-                print datetime.now(), "center_freq", m.center_freq, "power_db", power_db, "noise_floor_db", noise_floor_db
-                # save sensor data to database
-                if db.get_collection('sensor') is None:
-                    db.create_collection('sensor')
+                # FIXME run on a separate thread as database will grow greatly
+                if power_db > tb.squelch_threshold:
+                    print datetime.now(), "center_freq", m.center_freq, "power_db", power_db, "noise_floor_db", noise_floor_db
+                    # save sensor data to database
+                    if db.get_collection('sensor') is None:
+                        db.create_collection('sensor')
 
-                # choose highest signal amplitude
-                db.get_collection('sensor').insert_one(
-                    {'noise_floor': noise_floor_db, 'signal': {'amplitude': amp_db, 'channel': channel_id},
-                     'date': datetime.now(), 'in_band': in_band})
-                if in_band is False:
-                    payload = pickle.dumps({'noise_floor': noise_floor_db, 'signal': {'amplitude': amp_db, 'channel': channel_id},
-                     'date': datetime.now(), 'in_band': in_band})
-                    msg = utils.formatmsg(payload)
-                    # print msg
-                    mysckt.sendall(msg.encode('utf-8'))
-                    while mysckt.recv(len(payload)) != payload.encode('utf-8'):
+                    # choose highest signal amplitude
+                    db.get_collection('sensor').insert_one(
+                        {'noise_floor': noise_floor_db, 'signal': {'amplitude': amp_db, 'channel': channel_id},
+                         'date': datetime.now(), 'in_band': in_band})
+                    if in_band is False:
+                        payload = pickle.dumps(
+                            {'noise_floor': noise_floor_db, 'signal': {'amplitude': amp_db, 'channel': channel_id},
+                             'date': datetime.now(), 'in_band': in_band})
+                        msg = utils.formatmsg(payload)
+                        # print msg
                         mysckt.sendall(msg.encode('utf-8'))
-                in_band = True
+                        while mysckt.recv(len(payload)) != payload.encode('utf-8'):
+                            mysckt.sendall(msg.encode('utf-8'))
+                    in_band = True
 
         except ValueError:
             # free message queue till next tune cognitive engine request

@@ -18,9 +18,9 @@ _MAX_DUTY_CYCLE = 0.4
 
 def get_freq():
     freqs = []
-    start_freq = 898.5e6
-    stop_freq = 904.5e6
-    nchan = 6
+    start_freq = 2390e6
+    stop_freq = 2408e6
+    nchan = 9
     # start_freq = 900e6
     # stop_freq = 910e6
     # nchan = 9
@@ -40,6 +40,7 @@ _freq_array = get_freq()
 
 _DEFAULT_WAIT_TIME = 2
 HEADERSIZE = 10
+
 
 # _counts = 12
 
@@ -71,15 +72,18 @@ def inband_sensing(sense, stop):
     while 1:
         timestamp = time.time()
         for freq in _freq_array:
+            if stop():
+                break
             msg = utils.formatmsg(freq)
             # print msg
             sense.sendall(msg.encode('utf-8'))
             while sense.recv(len(freq)) != freq:
                 sense.sendall(msg.encode('utf-8'))
-        print "Sensed {0} channels in {1} seconds".format(len(_freq_array), time.time() - timestamp)
-        decision_makers.update_random()
         if stop():
             break
+        print "Sensed {0} channels in {1} seconds".format(len(_freq_array), time.time() - timestamp)
+        decision_makers.update_random()
+
 
 def select_max(prev, curr):
     if curr['idle_time'] > prev['idle_time']:
@@ -105,13 +109,12 @@ def main():
     inband_thread.start()
     # print 'stated in-band sensing'
     while idle is False:
-        print "HI"
         while not chan:
             notempty = decision_makers.gen_class_est()
             # # populate database for the first time
             if notempty is False:
-                print "populating database for 10 seconds"
-                time.sleep(10)
+                print "populating database for 30 minutes"
+                time.sleep(30 * 60)
                 # i = 0
                 # while i < _counts:
                 #     for freq in _freq_array:
@@ -141,18 +144,17 @@ def main():
                 pause = True
                 inband_thread.join()
                 wait_time = time.time()
-                print 'in-band sensing is paused...'
+                # print 'in-band sensing is paused...'
                 # FIXME move short term database to storage to reinitialize prediction
                 for i in range(len(selected_chan)):
-                    print 'sending prompt...'
+                    # print 'sending prompt...'
                     msg = utils.formatmsg('check')
                     # print msg
                     sense.sendall(msg.encode('utf-8'))
                     while sense.recv(len('check')) != 'check':
                         sense.sendall(msg.encode('utf-8'))
-                    print 'prompt sent!'
-                    centre_freq = selected_chan[i]['channel']['fmin'] + (
-                            selected_chan[i]['channel']['fmax'] - selected_chan[i]['channel']['fmin']) / 2.0
+                    # print 'prompt sent!'
+                    centre_freq = (selected_chan[i]['channel']['fmax'] + selected_chan[i]['channel']['fmin']) / 2.0
                     msg = utils.formatmsg(str(centre_freq))
                     # print msg
                     sense.sendall(msg.encode('utf-8'))
@@ -168,7 +170,12 @@ def main():
                         msglen = ''.encode('utf-8')
                         msg = pickle.loads(msg)
                         # print msg
-                    chan_result.append(decision_makers.return_radio_chans(msg))
+                    check = decision_makers.return_radio_chans(msg)
+                    if check['state'] == 'free':
+                        chan = True
+                        chan_result.append(check)
+                        if len(chan_result) >= int(2.0 / 3.0 * len(selected_chan)):
+                            break
                 pause = False
                 inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause],
                                                  name='inband-sensing')
@@ -177,10 +184,8 @@ def main():
                 decision_makers.gen_class_est()
                 # is a radio channel free
                 # print chan_result
-                for i in range(len(chan_result)):
-                    if chan_result[i]['state'] == 'free':
-                        chan = True
-                        break
+                if chan == True:
+                    break
             else:
                 # check if no channel is free
                 print "No channel available!!!",
@@ -192,7 +197,8 @@ def main():
                     _max_duty_cycle += 0.1
                 print 'threshold for first set of channels is now ', _max_duty_cycle
 
-        _max_duty_cycle = _MAX_DUTY_CYCLE
+        if _max_duty_cycle > 0:
+            _max_duty_cycle -= 0.1
         # traffic classification and prediction
         odds = []
         idle_times = []
@@ -235,9 +241,7 @@ def main():
         else:
             # prompt transmission for remaining seconds
             channel = _db.get_collection('channels').find_one({'_id': chan_id})
-            print channel['channel']['fmin'], channel['channel']['fmax']
-            new_freq = channel['channel']['fmin'] + (
-                    channel['channel']['fmax'] - channel['channel']['fmin']) / 2.0
+            new_freq = (channel['channel']['fmax'] + channel['channel']['fmin']) / 2.0
             msg = utils.formatmsg('NEW_FREQ={}'.format(new_freq))
             rf_frontend.send(msg.encode('utf-8'))
             while rf_frontend.recv(len('NEW_FREQ={}'.format(new_freq))) != 'NEW_FREQ={}'.format(new_freq):
