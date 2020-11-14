@@ -83,6 +83,9 @@ class tune(gr.feval_dd):
             # continiously retune in the same frequency untill a different
             # frequency is passed
             new_freq = self.tb.center_freq
+            if not self.tb.set_freq(new_freq):
+                print "Failed to set frequency to", new_freq
+                sys.exit(1)
 
             # wait until msgq is empty before continuing
             while (self.tb.msgq.full_p()):

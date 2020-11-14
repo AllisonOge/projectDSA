@@ -16,27 +16,9 @@ RF_PORT = 12347
 _MAX_DUTY_CYCLE = 0.4
 
 
-def get_freq():
-    freqs = []
-    start_freq = 2390e6
-    stop_freq = 2408e6
-    nchan = 9
-    # start_freq = 900e6
-    # stop_freq = 910e6
-    # nchan = 9
-    step = (stop_freq - start_freq) / nchan
-    for i in range(nchan):
-        if i == 0:
-            freqs.append(str(start_freq + step / 2))
-        else:
-            freqs.append(str(float(freqs[i - 1]) + step))
-    print "Default frequencies are ", freqs
-    return freqs
-
-
 myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
-_freq_array = get_freq()
+_freq_array = utils.get_freq()
 
 _DEFAULT_WAIT_TIME = 2
 HEADERSIZE = 10
@@ -68,10 +50,19 @@ def initialization():
     return sensing, rf_frontend
 
 
-def inband_sensing(sense, stop):
+def inband_sensing(sense, stop, f=None):
+    freq_array = _freq_array
+    if f is not None:
+        try:
+            print f
+            freq_array.remove(f)
+            print "New set of frequencies are ", freq_array
+        except ValueError:
+            print "No such frequency is available in choices"
+
     while 1:
         timestamp = time.time()
-        for freq in _freq_array:
+        for freq in freq_array:
             if stop():
                 break
             msg = utils.formatmsg(freq)
@@ -93,7 +84,7 @@ def select_max(prev, curr):
 
 
 def select_best(obj):
-    if obj['card']['best_channel'] > 0.9:
+    if obj['card']['best_channel'] > 0.7:
         return obj
 
 
@@ -206,7 +197,7 @@ def main():
             # print chan_result[i]['id']
             query = {'$match': {'channel_id': chan_result[i]['id']}}
             chan_distro = _db.get_collection('time_distro').find_one(query['$match'])
-            # print chan_distro
+            print chan_distro
             if chan_distro['traffic_class'] == 'PERIODIC':
                 idle_time = _db.get_collection('time_distro').find_one({'channel_id': chan_result[i]['id']})
                 idle_times.append(
@@ -242,14 +233,27 @@ def main():
             # prompt transmission for remaining seconds
             channel = _db.get_collection('channels').find_one({'_id': chan_id})
             new_freq = (channel['channel']['fmax'] + channel['channel']['fmin']) / 2.0
+            # pause = True
+            # inband_thread.join()
+            # pause = False
+            # inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause, new_freq],
+            #                                  name='inband-sensing')
+            # inband_thread.start()
+
             msg = utils.formatmsg('NEW_FREQ={}'.format(new_freq))
             rf_frontend.send(msg.encode('utf-8'))
             while rf_frontend.recv(len('NEW_FREQ={}'.format(new_freq))) != 'NEW_FREQ={}'.format(new_freq):
                 rf_frontend.send(msg.encode('utf-8'))
             timestamp = time.time()
             print "Transmitting for {} seconds".format(selected_idle_time)
-            while (time.time() - timestamp) < selected_idle_time:
-                pass
+            time.sleep(selected_idle_time)
+            # pause = True
+            # inband_thread.join()
+            # pause = False
+            # inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause],
+            #                                  name='inband-sensing')
+            # inband_thread.start()
+            chan_id = None
             chan = False
             msg = utils.formatmsg('STOP_COMM')
             # print msg
