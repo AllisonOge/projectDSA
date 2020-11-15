@@ -7,6 +7,7 @@ import pickle
 import numpy as np
 import utils
 import decision_makers
+import random
 from pymongo import MongoClient
 
 IP_ADDRESS = '10.0.0.1'
@@ -167,11 +168,7 @@ def main():
                         chan_result.append(check)
                         if len(chan_result) >= int(2.0 / 3.0 * len(selected_chan)):
                             break
-                pause = False
-                inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause],
-                                                 name='inband-sensing')
-                inband_thread.start()
-                print 'started in-band sensing after {} seconds'.format(time.time() - wait_time)
+                
                 decision_makers.gen_class_est()
                 # is a radio channel free
                 # print chan_result
@@ -200,11 +197,17 @@ def main():
             print chan_distro
             if chan_distro['traffic_class'] == 'PERIODIC':
                 idle_time = _db.get_collection('time_distro').find_one({'channel_id': chan_result[i]['id']})
+                # get time per bit from utils collection
+                # find t0 which is the time between the last sensed bit and the previous bit
+                # compute idle time as (1-occ_est)*period - t0
                 idle_times.append(
                     {'idle_time': idle_time['mean_it'] * idle_time['period'], 'chan_id': chan_result[i]['id']})
                 print 'idle time is ', idle_time['mean_it'] * idle_time['period']
             else:
                 card = _db.get_collection('channels').find_one({'_id': chan_result[i]['id']})
+                # use best_chan to generate wait time exponential distro
+                # check if probability of wait time distro within 8 seconds is >= 0.9 ie 90% warranty
+                # pick the highest of the channels above 0.9
                 odds.append({'card': card, 'chan_id': chan_result[i]['id']})
                 # print odds
         # select longest idle time or any best channel
@@ -224,7 +227,7 @@ def main():
                     else:
                         chan_id = None
             else:
-                print 'unexpected, FIXME!!!'
+                print 'unexpected, FIXME!!!'                
 
         print 'Selected channel is ', chan_id
         if chan_id is None:
@@ -233,26 +236,25 @@ def main():
             # prompt transmission for remaining seconds
             channel = _db.get_collection('channels').find_one({'_id': chan_id})
             new_freq = (channel['channel']['fmax'] + channel['channel']['fmin']) / 2.0
-            # pause = True
-            # inband_thread.join()
-            # pause = False
-            # inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause, new_freq],
-            #                                  name='inband-sensing')
-            # inband_thread.start()
-
+            
             msg = utils.formatmsg('NEW_FREQ={}'.format(new_freq))
             rf_frontend.send(msg.encode('utf-8'))
             while rf_frontend.recv(len('NEW_FREQ={}'.format(new_freq))) != 'NEW_FREQ={}'.format(new_freq):
                 rf_frontend.send(msg.encode('utf-8'))
             timestamp = time.time()
             print "Transmitting for {} seconds".format(selected_idle_time)
+            pause = False
+            inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause, new_freq],
+                                             name='inband-sensing')
+            inband_thread.start()
+            print 'started in-band sensing after {} seconds'.format(time.time() - wait_time)
             time.sleep(selected_idle_time)
-            # pause = True
-            # inband_thread.join()
-            # pause = False
-            # inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause],
-            #                                  name='inband-sensing')
-            # inband_thread.start()
+            pause = True
+            inband_thread.join()
+            pause = False
+            inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause],
+                                             name='inband-sensing')
+            inband_thread.start()
             chan_id = None
             chan = False
             msg = utils.formatmsg('STOP_COMM')
