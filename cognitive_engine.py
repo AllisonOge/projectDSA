@@ -8,6 +8,7 @@ import numpy as np
 import utils
 import decision_makers
 import random
+import math
 from pymongo import MongoClient
 
 IP_ADDRESS = '10.0.0.1'
@@ -15,7 +16,6 @@ SENSOR_PORT = 12345
 RF_PORT = 12347
 
 _MAX_DUTY_CYCLE = 0.4
-
 
 myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
@@ -55,8 +55,8 @@ def inband_sensing(sense, stop, f=None):
     freq_array = _freq_array
     if f is not None:
         try:
-            print f
-            freq_array.remove(f)
+            # print f, freq_array
+            freq_array = filter(lambda x: x != str(f), freq_array)
             print "New set of frequencies are ", freq_array
         except ValueError:
             print "No such frequency is available in choices"
@@ -73,7 +73,24 @@ def inband_sensing(sense, stop, f=None):
                 sense.sendall(msg.encode('utf-8'))
         if stop():
             break
-        print "Sensed {0} channels in {1} seconds".format(len(_freq_array), time.time() - timestamp)
+        sense_time = time.time() - timestamp
+        print "Sensed {0} channels in {1} seconds".format(len(freq_array), sense_time)
+        if len(_freq_array) == len(freq_array):
+            sec_per_bit = sense_time / len(_freq_array)
+            if _db.get_collection('utils') is None:
+                _db.create_collection('utils')
+            if len(list(_db.get_collection('utils').find())) == 0:
+                _db.get_collection('utils').insert_one({'sec_per_bit': sec_per_bit})
+            else:
+                prev_spb = list(_db.get_collection('utils').find())
+                # print prev_spb
+                if len(prev_spb) > 0:
+                    prev_spb = prev_spb[0]['sec_per_bit']
+                    query = {'sec_per_bit': prev_spb}
+                    _db.get_collection('utils').update_one(query,
+                                                           {'$set': {'sec_per_bit': sec_per_bit}})
+                else:
+                    _db.create_collection('utils').insert_one({'sec_per_bit': sec_per_bit})
         decision_makers.update_random()
 
 
@@ -168,7 +185,7 @@ def main():
                         chan_result.append(check)
                         if len(chan_result) >= int(2.0 / 3.0 * len(selected_chan)):
                             break
-                
+
                 decision_makers.gen_class_est()
                 # is a radio channel free
                 # print chan_result
@@ -185,7 +202,7 @@ def main():
                     _max_duty_cycle += 0.1
                 print 'threshold for first set of channels is now ', _max_duty_cycle
 
-        if _max_duty_cycle > 0:
+        if _max_duty_cycle > _MAX_DUTY_CYCLE:
             _max_duty_cycle -= 0.1
         # traffic classification and prediction
         odds = []
@@ -194,18 +211,30 @@ def main():
             # print chan_result[i]['id']
             query = {'$match': {'channel_id': chan_result[i]['id']}}
             chan_distro = _db.get_collection('time_distro').find_one(query['$match'])
-            print chan_distro
+            # print chan_distro
             if chan_distro['traffic_class'] == 'PERIODIC':
-                idle_time = _db.get_collection('time_distro').find_one({'channel_id': chan_result[i]['id']})
+                filt = {'channel_id': chan_result[i]['id']}
+                idle_time = _db.get_collection('time_distro').find_one(filt)
                 # get time per bit from utils collection
+                if _db.get_collection('utils'):
+                    sec_per_bit = list(_db.get_collection('utils').find())[0]['sec_per_bit']
+                else:
+                    # assume 1 second
+                    sec_per_bit = 1
                 # find t0 which is the time between the last sensed bit and the previous bit
+                t0 = decision_makers.get_t0(chan_result[i]['id']) * sec_per_bit
                 # compute idle time as (1-occ_est)*period - t0
+                occ_est = _db.get_collection('channels').find_one(filt)
+                print occ_est
+                occ_est = occ_est['channel']['occ_estimate']
+                idle_time_value = (1 - occ_est) * idle_time['period'] - t0
                 idle_times.append(
-                    {'idle_time': idle_time['mean_it'] * idle_time['period'], 'chan_id': chan_result[i]['id']})
-                print 'idle time is ', idle_time['mean_it'] * idle_time['period']
+                    {'idle_time': idle_time_value, 'chan_id': chan_result[i]['id']})
+                print 'idle time is ', idle_time_value
             else:
                 card = _db.get_collection('channels').find_one({'_id': chan_result[i]['id']})
                 # use best_chan to generate wait time exponential distro
+                print card['best_channel'] * math.exp(-(card['best_channel'] * 8))
                 # check if probability of wait time distro within 8 seconds is >= 0.9 ie 90% warranty
                 # pick the highest of the channels above 0.9
                 odds.append({'card': card, 'chan_id': chan_result[i]['id']})
@@ -216,7 +245,7 @@ def main():
             chan_id = reduce(select_max, idle_times)
             selected_idle_time = chan_id['idle_time']
             chan_id = chan_id['chan_id']
-        if 'chan_id' not in locals():
+        else:
             if len(odds) > 0:
                 result = map(select_best, odds)
                 for i in range(len(result)):
@@ -227,7 +256,7 @@ def main():
                     else:
                         chan_id = None
             else:
-                print 'unexpected, FIXME!!!'                
+                print 'unexpected, FIXME!!!'
 
         print 'Selected channel is ', chan_id
         if chan_id is None:
@@ -236,7 +265,7 @@ def main():
             # prompt transmission for remaining seconds
             channel = _db.get_collection('channels').find_one({'_id': chan_id})
             new_freq = (channel['channel']['fmax'] + channel['channel']['fmin']) / 2.0
-            
+
             msg = utils.formatmsg('NEW_FREQ={}'.format(new_freq))
             rf_frontend.send(msg.encode('utf-8'))
             while rf_frontend.recv(len('NEW_FREQ={}'.format(new_freq))) != 'NEW_FREQ={}'.format(new_freq):

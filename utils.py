@@ -1,4 +1,5 @@
 import numpy as np
+import sys
 
 def formatmsg(msg):
     packet = '{length:<10}'.format(length=len(msg)) + msg
@@ -28,55 +29,57 @@ def get_freq():
     print "Default frequencies are ", freqs
     return freqs
 
+
+def get_nonzeros(prev, x):
+    if type(prev) != np.ndarray:
+        prev = np.array([prev])
+    if float(x) != 0.0:
+        prev = np.append(prev, x)
+    return prev
+
+
 class TrafficClassification:
     """Classify traffic pattern for predictive selection"""
 
-    def __init__(self, sequence_len, lag_samples):
+    def __init__(self, sequence_len):
         """initialize class to classify traffic of binary sequence
-        of length while correlating the sequence at lag of lower length"""
+        of length while correlating the sequence edge [0, 1]"""
         self.rxx = np.array([])
-        self.tau_max = 0
-        self.tau_local = 0
-        self.tau_ave_arr = np.zeros((1, sequence_len))
+        self.corr_stats = np.array([])
         self.tau_ave = 0
         self.std = 0
-        # self.seq_pointer = 0
-        if lag_samples < sequence_len:
-            self.N = sequence_len
-            self.m = lag_samples
-        else:
-            raise AttributeError("lag length has to be less than sequence length")
+        self.N = sequence_len
 
     def classify(self, bin_seq):
         """method to classify traffic based to time binary sequence"""
         if len(bin_seq) != self.N:
             raise ValueError("length of samples do not match the initialized length")
-        self.rxx = np.correlate(bin_seq, bin_seq[self.m:-1], mode='valid')
-        if max(self.rxx) >= self.tau_max:
-            self.tau_max = max(self.rxx)
-            self.tau_ave_arr = np.append(self.tau_ave_arr, self.tau_max)
-            # self.seq_pointer = self.N - list(self.rxx).index(max(self.rxx))
-            # print "global maximum set to ", self.tau_max
+        self.rxx = np.correlate(bin_seq, [0, 1], mode='valid')
+        sep = np.array([])
+        for i in range(len(self.rxx)):
+            if i > 0:
+                if self.rxx[i - 1] == 0 and self.rxx[i] == 1:
+                    sep = np.append(sep, 0)
+            else:
+                sep = np.array([1])
+            sep[-1] += 1
+        if self.rxx[i - 1] == 0 and self.rxx[i] == 1:
+            sep = np.append(sep, 0)
         else:
-            self.tau_ave_arr = np.append(self.tau_ave_arr,
-                                         (max(self.rxx) - self.tau_local))
-            self.tau_local = max(self.rxx)
-            # self.tau_ave_arr = np.append(self.tau_ave_arr,
-            #                              self.seq_pointer + list(self.rxx).index(self.tau_local))
-        # self.seq_pointer += self.N
-        # print self.seq_pointer
-        # print "length of array is ", len(self.tau_ave_arr)
-        self.tau_ave = np.average(self.tau_ave_arr)
-        self.std = np.std(self.tau_ave_arr)
-        # print self.tau_max, self.tau_ave, self.std
-        if self.tau_ave == self.tau_max:
-            print "Traffic is periodic with period ", self.tau_max
-            return 'PERIODIC', self.tau_max
-        elif self.std < 3 * self.tau_ave:
-            # print self.tau_ave, self.std, self.tau_max
-            print "Traffic is periodic with period ", round(self.tau_ave)
+            if len(sep) > 1:
+                sep = sep[:-1]
+        # print sep
+        sep = reduce(get_nonzeros, sep)
+        self.corr_stats = np.append(self.corr_stats, sep)
+
+        self.tau_ave = np.average(self.corr_stats)
+        self.std = np.std(self.corr_stats)
+        # print(self.tau_ave, self.std, self.corr_stats)
+        if self.std == 0.0 or self.std < 0.4 * self.tau_ave:
+            # print self.tau_ave, self.std, self.corr_stats
+            # print "Traffic is periodic with period ", round(self.tau_ave)
             return 'PERIODIC', round(self.tau_ave)
         else:
             # print "Traffic is stochastic"
-            # print self.tau_ave, self.std, self.tau_max
+            # print self.tau_ave, self.std
             return 'STOCHASTIC', None
