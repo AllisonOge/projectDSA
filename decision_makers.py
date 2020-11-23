@@ -9,7 +9,7 @@ myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
 
 _THRESHOLD_DB = 23
-_SAMPLE_LEN = 20
+_SAMPLE_LEN = 30
 _TRAFFIC_CLASS = 'UNKNOWN'
 
 
@@ -35,7 +35,8 @@ def db_gen_seq(id):
 def gen_class_est():
     """in-band sequence generator, classification and occupancy estimation"""
     channels = list(_db.get_collection('channels').find())
-    if len(channels) > 0:
+    channels_distro = list(_db.get_collection('time_distro').find())
+    if len(channels) > 0 and len(channels) == len(channels_distro):
         # print "Updating the traffic estimate for all channels"
         for channel in channels:
             filt = [
@@ -91,7 +92,10 @@ def gen_class_est():
 
         return True
     else:
-        print "Channel is empty, could not update occupancy!!!"
+        if len(channels) < 1:
+            print "Channel is empty, could not update occupancy!!!"
+        else:
+            print "New channel set, could not update occupancy!!!"
         return False
 
 

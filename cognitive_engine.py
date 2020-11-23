@@ -21,7 +21,7 @@ myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
 _freq_array = utils.get_freq()
 
-_DEFAULT_WAIT_TIME = 2
+_DEFAULT_WAIT_TIME = 7
 HEADERSIZE = 10
 
 
@@ -100,10 +100,18 @@ def select_max(prev, curr):
     else:
         return prev
 
-
 def select_best(obj):
-    if obj['card']['best_channel'] > 0.7:
+    if obj['card']['best_channel'] > 0.6:
         return obj
+
+def select_least(prev, obj):
+    # select stochastic channels of idle prob greater than 60%
+    if obj['card']['best_channel'] > 0.6:
+        # pick the best idle time distro of lesser prob of exponential idle time
+        if obj['idle_time_prob'] < prev['idle_time_prob']:
+            return obj
+        else:
+            return prev
 
 
 def main():
@@ -225,7 +233,7 @@ def main():
                 t0 = decision_makers.get_t0(chan_result[i]['id']) * sec_per_bit
                 # compute idle time as (1-occ_est)*period - t0
                 occ_est = _db.get_collection('channels').find_one(filt)
-                print occ_est
+                print "Occupancy estimate is ", occ_est
                 occ_est = occ_est['channel']['occ_estimate']
                 idle_time_value = (1 - occ_est) * idle_time['period'] - t0
                 idle_times.append(
@@ -234,27 +242,45 @@ def main():
             else:
                 card = _db.get_collection('channels').find_one({'_id': chan_result[i]['id']})
                 # use best_chan to generate wait time exponential distro
-                print card['best_channel'] * math.exp(-(card['best_channel'] * 8))
-                # check if probability of wait time distro within 8 seconds is >= 0.9 ie 90% warranty
-                # pick the highest of the channels above 0.9
-                odds.append({'card': card, 'chan_id': chan_result[i]['id']})
-                # print odds
+                idle_time_prob = 0
+                # get the probability of wait time distro within 9 seconds and 1 minute 30 secs
+                if chan_distro['avg_idle_time'] > 0:
+                    for j in range(9, 90):
+                        idle_time_prob += (1 / chan_distro['avg_idle_time']) * math.exp(
+                            -(j / chan_distro['avg_idle_time']))
+                    print "Idle time probability is ", idle_time_prob, " for channel ", chan_result[i]['id']
+                    odds.append({'card': card, 'idle_time_prob': idle_time_prob, 'chan_id': chan_result[i]['id']})
+                else:
+                    odds.append({'card': card, 'chan_id': chan_result[i]['id']})
+# print odds
         # select longest idle time or any best channel
         if len(idle_times) > 0:
             print idle_times
-            chan_id = reduce(select_max, idle_times)
-            selected_idle_time = chan_id['idle_time']
-            chan_id = chan_id['chan_id']
+            if len(idle_times) > 1:
+                chan_id = reduce(select_max, idle_times)
+                selected_idle_time = chan_id['idle_time']
+                chan_id = chan_id['chan_id']
+            else:
+                chan_id = idle_times[0]['idle_time']
         else:
             if len(odds) > 0:
-                result = map(select_best, odds)
-                for i in range(len(result)):
-                    if result[i] is not None:
-                        chan_id = result[i]['chan_id']
+                if len(odds) > 1:
+                    result = reduce(select_least, odds)
+                    if result:
+                        chan_id = result['chan_id']
                         selected_idle_time = _DEFAULT_WAIT_TIME
-                        break
                     else:
-                        chan_id = None
+                        result = map(select_best, odds)
+                        for i in range(len(result)):
+                            if result[i]:
+                                chan_id = result[i]['chan_id']
+                                selected_idle_time = 2.0
+                                break
+                            else:
+                                chan_id = None
+                else:
+                    chan_id = odds[0]['chan_id']
+                    selected_idle_time = 2.0
             else:
                 print 'unexpected, FIXME!!!'
 
