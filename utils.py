@@ -59,27 +59,36 @@ class TrafficClassification:
         for i in range(len(self.rxx)):
             if i > 0:
                 if self.rxx[i - 1] == 0 and self.rxx[i] == 1:
-                    sep = np.append(sep, 0)
-            else:
-                sep = np.array([1])
-            sep[-1] += 1
+                    sep = np.append(sep, 1)
+                else:
+                    if len(sep) > 0:
+                        sep[-1] += 1
+        # print(sep)
         if self.rxx[i - 1] == 0 and self.rxx[i] == 1:
             sep = np.append(sep, 0)
         else:
             if len(sep) > 1:
                 sep = sep[:-1]
-        # print sep
+            else:
+                sep = np.array([self.N])
+                sys.stderr.write('WARNING: Choose a larger sample size for better prediction\n')
+        # print(sep)
         sep = reduce(get_nonzeros, sep)
         self.corr_stats = np.append(self.corr_stats, sep)
 
         self.tau_ave = np.average(self.corr_stats)
         self.std = np.std(self.corr_stats)
-        # print(self.tau_ave, self.std, self.corr_stats)
-        if self.std == 0.0 or self.std < 0.4 * self.tau_ave:
-            # print self.tau_ave, self.std, self.corr_stats
+        if self.tau_ave == 0.0:
+            print "Choose a larger sample size"
+            sys.exit(1)
+        if self.std == 0.0 or self.std < 0.3 * self.tau_ave:
+            # print (self.tau_ave, self.std, self.corr_stats)
             # print "Traffic is periodic with period ", round(self.tau_ave)
             return 'PERIODIC', round(self.tau_ave)
         else:
             # print "Traffic is stochastic"
-            # print self.tau_ave, self.std
+            # print (self.tau_ave, self.std)
             return 'STOCHASTIC', None
+
+    def get_corr(self):
+        return self.rxx

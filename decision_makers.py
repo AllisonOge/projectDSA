@@ -8,7 +8,7 @@ import utils
 myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
 
-_THRESHOLD_DB = 21
+_THRESHOLD_DB = 23
 _SAMPLE_LEN = 20
 _TRAFFIC_CLASS = 'UNKNOWN'
 
