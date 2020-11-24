@@ -1,3 +1,4 @@
+# !/usr/bin/env python3
 # a simplified approach of channel selection
 
 import socket
@@ -21,7 +22,7 @@ myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
 _freq_array = utils.get_freq()
 
-_DEFAULT_WAIT_TIME = 7
+_DEFAULT_WAIT_TIME = 2.0
 HEADERSIZE = 10
 
 
@@ -41,12 +42,12 @@ def initialization():
     sensingsckt.listen(1)
     rf_frontendsckt.listen(1)
     # accept sensing connection
-    print "Waiting for sensor to connect..."
+    print ("Waiting for sensor to connect...")
     (sensing, address) = sensingsckt.accept()
-    print "sensor is connected to address", address
-    print "Waiting for rf-frontend to connect..."
+    print ("sensor is connected to address", address)
+    print ("Waiting for rf-frontend to connect...")
     (rf_frontend, address2) = rf_frontendsckt.accept()
-    print "rf-frontend is connected to address", address2
+    print ("rf-frontend is connected to address", address2)
     # perform other socket initializations
     return sensing, rf_frontend
 
@@ -57,9 +58,9 @@ def inband_sensing(sense, stop, f=None):
         try:
             # print f, freq_array
             freq_array = filter(lambda x: x != str(f), freq_array)
-            print "New set of frequencies are ", freq_array
+            print ("New set of frequencies are ", freq_array)
         except ValueError:
-            print "No such frequency is available in choices"
+            print ("No such frequency is available in choices")
 
     while 1:
         timestamp = time.time()
@@ -74,7 +75,7 @@ def inband_sensing(sense, stop, f=None):
         if stop():
             break
         sense_time = time.time() - timestamp
-        print "Sensed {0} channels in {1} seconds".format(len(freq_array), sense_time)
+        print ("Sensed {0} channels in {1} seconds".format(len(freq_array), sense_time))
         if len(_freq_array) == len(freq_array):
             sec_per_bit = sense_time / len(_freq_array)
             if _db.get_collection('utils') is None:
@@ -115,45 +116,32 @@ def select_least(prev, obj):
 
 
 def main():
+    with open('traffic_classification.pkl', 'rb') as f:
+        model1 = pickle.load(f)
+    print("classifier model loaded")
     _max_duty_cycle = _MAX_DUTY_CYCLE
     idle = False
     chan = False
     pause = False
     # application initialization
-    print "Application is initializing..."
+    print("Application is initializing...")
     sense, rf_frontend = initialization()
     inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause], name='inband-sensing')
     inband_thread.start()
     # print 'stated in-band sensing'
+    # # populate database at start for 30 minutes
+    # print("populating database for 30 minutes to build prediction model")
+    # time.sleep(30 * 60)
     while idle is False:
         while not chan:
-            notempty = decision_makers.gen_class_est()
-            # # populate database for the first time
-            if notempty is False:
-                print "populating database for 30 minutes"
-                time.sleep(30 * 60)
-                # i = 0
-                # while i < _counts:
-                #     for freq in _freq_array:
-                #         msg = formatmsg(freq)
-                #         # print msg
-                #         sense.sendall(msg.encode('utf-8'))
-                #         while sense.recv(len(freq)) != freq:
-                #             sense.sendall(msg.encode('utf-8'))
-                #     i += 1
-                #     print '\rCreating database from default channel set for {c} number of times... {p:.2f}%'.format(
-                #         c=_counts,
-                #         p=(1.0 * i / _counts) * 100),
-                # decision_makers.gen_class_est()
-                # print
-
+            decision_makers.gen_class_est(model1)
             # query database for set of frequency based on time occupancy usage
             filt = [{'$project': {'channel': 1, 'selected': {'$lte': ['$channel.occ_estimate', _max_duty_cycle]}}},
                     {'$match': {'selected': True}}]
             selected_chan = list(_db.get_collection('channels').aggregate(filt))
             # check if set of channel is not empty
             if len(selected_chan) > 0:
-                print len(selected_chan), "channel{} selected".format(utils.txtformat(len(selected_chan)))
+                print(len(selected_chan), "channel{} selected".format(utils.txtformat(len(selected_chan))))
                 # sense selected channels to build prediction database and for free channel
                 selected_freq = []
                 chan_result = []
@@ -194,21 +182,21 @@ def main():
                         if len(chan_result) >= int(2.0 / 3.0 * len(selected_chan)):
                             break
 
-                decision_makers.gen_class_est()
+                decision_makers.gen_class_est(model1)
                 # is a radio channel free
                 # print chan_result
                 if chan == True:
                     break
             else:
                 # check if no channel is free
-                print "No channel available!!!",
+                print("No channel available!!!",)
                 # print 'previous threshold is ', _max_duty_cycle,
                 if _max_duty_cycle > 0.9:
-                    print "Querying the entire database channel set!!!"
+                    print("Querying the entire database channel set!!!")
                 else:
                     # increase by 10%
                     _max_duty_cycle += 0.1
-                print 'threshold for first set of channels is now ', _max_duty_cycle
+                print('threshold for first set of channels is now ', _max_duty_cycle)
 
         if _max_duty_cycle > _MAX_DUTY_CYCLE:
             _max_duty_cycle -= 0.1
@@ -233,12 +221,12 @@ def main():
                 t0 = decision_makers.get_t0(chan_result[i]['id']) * sec_per_bit
                 # compute idle time as (1-occ_est)*period - t0
                 occ_est = _db.get_collection('channels').find_one(filt)
-                print "Occupancy estimate is ", occ_est
+                print("Occupancy estimate is ", occ_est)
                 occ_est = occ_est['channel']['occ_estimate']
                 idle_time_value = (1 - occ_est) * idle_time['period'] - t0
                 idle_times.append(
                     {'idle_time': idle_time_value, 'chan_id': chan_result[i]['id']})
-                print 'idle time is ', idle_time_value
+                print ('idle time is ', idle_time_value)
             else:
                 card = _db.get_collection('channels').find_one({'_id': chan_result[i]['id']})
                 # use best_chan to generate wait time exponential distro
@@ -248,14 +236,14 @@ def main():
                     for j in range(9, 90):
                         idle_time_prob += (1 / chan_distro['avg_idle_time']) * math.exp(
                             -(j / chan_distro['avg_idle_time']))
-                    print "Idle time probability is ", idle_time_prob, " for channel ", chan_result[i]['id']
+                    print("Idle time probability is ", idle_time_prob, " for channel ", chan_result[i]['id'])
                     odds.append({'card': card, 'idle_time_prob': idle_time_prob, 'chan_id': chan_result[i]['id']})
                 else:
                     odds.append({'card': card, 'chan_id': chan_result[i]['id']})
 # print odds
         # select longest idle time or any best channel
         if len(idle_times) > 0:
-            print idle_times
+            print (idle_times)
             if len(idle_times) > 1:
                 chan_id = reduce(select_max, idle_times)
                 selected_idle_time = chan_id['idle_time']
@@ -274,17 +262,17 @@ def main():
                         for i in range(len(result)):
                             if result[i]:
                                 chan_id = result[i]['chan_id']
-                                selected_idle_time = 2.0
+                                selected_idle_time = _DEFAULT_WAIT_TIME
                                 break
                             else:
                                 chan_id = None
                 else:
                     chan_id = odds[0]['chan_id']
-                    selected_idle_time = 2.0
+                    selected_idle_time = _DEFAULT_WAIT_TIME
             else:
-                print 'unexpected, FIXME!!!'
+                print ('unexpected as channel set is not empty, FIXME!!!')
 
-        print 'Selected channel is ', chan_id
+        print ('Selected channel is ', chan_id)
         if chan_id is None:
             chan = False
         else:
@@ -297,12 +285,12 @@ def main():
             while rf_frontend.recv(len('NEW_FREQ={}'.format(new_freq))) != 'NEW_FREQ={}'.format(new_freq):
                 rf_frontend.send(msg.encode('utf-8'))
             timestamp = time.time()
-            print "Transmitting for {} seconds".format(selected_idle_time)
+            print ("Transmitting for {} seconds".format(selected_idle_time))
             pause = False
             inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause, new_freq],
                                              name='inband-sensing')
             inband_thread.start()
-            print 'started in-band sensing after {} seconds'.format(time.time() - wait_time)
+            print ('started in-band sensing after {} seconds'.format(time.time() - wait_time))
             time.sleep(selected_idle_time)
             pause = True
             inband_thread.join()
@@ -325,7 +313,7 @@ def main():
                 if msg.split('=')[1] == 'True':
                     idle = True
     # halt communication system
-    print "End of Communication..., DONE!"
+    print ("End of Communication..., DONE!")
     pause = True
     inband_thread.join()
 
@@ -333,8 +321,8 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except socket.error or KeyboardInterrupt, e:
-        print e
+    except (socket.error, KeyboardInterrupt ) as e:
+        print (e)
         if _db.get_collection('long_term') is None:
             _db.get_collection('sensor').rename('long_term')
         else:

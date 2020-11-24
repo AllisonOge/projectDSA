@@ -26,7 +26,7 @@ def get_freq():
             freqs.append(str(start_freq + step / 2))
         else:
             freqs.append(str(float(freqs[i - 1]) + step))
-    print "Default frequencies are ", freqs
+    print ("Default frequencies are ", freqs)
     return freqs
 
 
@@ -79,16 +79,16 @@ class TrafficClassification:
         self.tau_ave = np.average(self.corr_stats)
         self.std = np.std(self.corr_stats)
         if self.tau_ave == 0.0:
-            print "Choose a larger sample size"
+            print ("Choose a larger sample size")
             sys.exit(1)
         if self.std == 0.0 or self.std < 0.3 * self.tau_ave:
             # print (self.tau_ave, self.std, self.corr_stats)
             # print "Traffic is periodic with period ", round(self.tau_ave)
-            return 'PERIODIC', round(self.tau_ave)
+            return ('PERIODIC', round(self.tau_ave))
         else:
             # print "Traffic is stochastic"
             # print (self.tau_ave, self.std)
             return 'STOCHASTIC', None
 
-    def get_corr(self):
-        return self.rxx
+    def get_period(self):
+        return round(self.tau_ave)

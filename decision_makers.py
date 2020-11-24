@@ -2,14 +2,16 @@
 from pymongo import MongoClient
 import numpy as np
 import datetime
+import pandas as pd
+# from current directory
 import utils
 
 # database
 myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
 
-_THRESHOLD_DB = 23
-_SAMPLE_LEN = 30
+_THRESHOLD_DB = 22
+_SAMPLE_LEN = 50
 _TRAFFIC_CLASS = 'UNKNOWN'
 
 
@@ -32,7 +34,7 @@ def db_gen_seq(id):
     return list(_db.get_collection('sensor').aggregate(filt))
 
 
-def gen_class_est():
+def gen_class_est(model):
     """in-band sequence generator, classification and occupancy estimation"""
     channels = list(_db.get_collection('channels').find())
     channels_distro = list(_db.get_collection('time_distro').find())
@@ -60,6 +62,13 @@ def gen_class_est():
                         # print len(bit_seq[_SAMPLE_LEN * i:_SAMPLE_LEN * (i + 1)])
                         traffic_class, period = traffic_classifier.classify(
                             bit_seq[_SAMPLE_LEN * i:_SAMPLE_LEN * (i + 1)])
+                        bit_seq_pd = pd.DataFrame(bit_seq[_SAMPLE_LEN * i:_SAMPLE_LEN * (i + 1)], dtype=int)
+                        print (model.predict(bit_seq_pd))
+                        if model.predict(bit_seq_pd) == 0:
+                            traffic_class = "STOCHASTIC"
+                        else:
+                            traffic_class = "PERIODIC"
+                            period = traffic_classifier.get_period()
                 else:
                     traffic_class = _db.get_collection('time_distro').find_one({'channel_id': channel['_id']})[
                         'traffic_class']
@@ -80,7 +89,7 @@ def gen_class_est():
             _db.get_collection('channels').find_one_and_update(query, {'$set': {'channel.occ_estimate': newdc}})
             # update database
             if _db.get_collection("time_distro") is None:
-                print 'time distro has not being initialized yet, FIXME!!!'
+                print ('time distro has not being initialized yet, FIXME!!!')
                 pass
             else:
                 if traffic_class == 'PERIODIC':
@@ -93,9 +102,9 @@ def gen_class_est():
         return True
     else:
         if len(channels) < 1:
-            print "Channel is empty, could not update occupancy!!!"
+            print ("Channel is empty, could not update occupancy!!!")
         else:
-            print "New channel set, could not update occupancy!!!"
+            print ("New channel set, could not update occupancy!!!")
         return False
 
 
@@ -175,7 +184,7 @@ def update_random():
 
         return True
     else:
-        print "Channel is empty, could not predict!!!"
+        print ("Channel is empty, could not predict!!!")
         return False
 
 
@@ -185,7 +194,7 @@ def return_radio_chans(result):
         state = 'busy'
     else:
         state = 'free'
-    print 'Channel state ', state
+    print ('Channel state ', state)
     return {
         'id': result['signal']['channel'],
         'state': state
@@ -202,7 +211,7 @@ def get_t0(id):
         else:
             if i > 0:
                 if not (bit_seq[i - 1] and bit_seq[i]):
-                    print bit_seq[i - 1], bit_seq[i]
+                    print (bit_seq[i - 1], bit_seq[i])
                     t0 += 1
                 else:
                     break
