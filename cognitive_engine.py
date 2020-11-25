@@ -5,12 +5,15 @@ import socket
 import threading
 import time
 import pickle
+import six
 import numpy as np
-import utils
 import decision_makers
 import random
+import functools
 import math
 from pymongo import MongoClient
+# from current folder
+import utils
 
 IP_ADDRESS = '10.0.0.1'
 SENSOR_PORT = 12345
@@ -51,48 +54,69 @@ def initialization():
     # perform other socket initializations
     return sensing, rf_frontend
 
+# python 3 version of threading with pause and resume control
+class InbandSensing(threading.Thread):
+    def __init__(self, sense, f):
+        super(InbandSensing, self).__init__(name='inband-sensing')
+        self.__flag = threading.Event()
+        self.__flag.set()
+        self.__running = threading.Event()
+        self.__running.set()
+        self.f = f
+        self.sense = sense
+        self.freq_array = _freq_array
 
-def inband_sensing(sense, stop, f=None):
-    freq_array = _freq_array
-    if f is not None:
-        try:
-            # print f, freq_array
-            freq_array = filter(lambda x: x != str(f), freq_array)
-            print ("New set of frequencies are ", freq_array)
-        except ValueError:
-            print ("No such frequency is available in choices")
+    def run(self):
+        while self.__running.isSet():
+            timestamp = time.time()
+            print ('Scanning frequencies.. ', self.freq_array)
+            for freq in self.freq_array:
+                self.__flag.wait()
+                msg = utils.formatmsg(freq)
+                # print msg
+                self.sense.sendall(msg.encode('utf-8'))
+                while self.sense.recv(len(freq)) != freq.encode('utf-8'):
+                    print("hi", self.sense.recv(len(freq)), freq.encode('utf-8'))
+                    self.sense.sendall(msg.encode('utf-8'))
+                print("done")
 
-    while 1:
-        timestamp = time.time()
-        for freq in freq_array:
-            if stop():
-                break
-            msg = utils.formatmsg(freq)
-            # print msg
-            sense.sendall(msg.encode('utf-8'))
-            while sense.recv(len(freq)) != freq:
-                sense.sendall(msg.encode('utf-8'))
-        if stop():
-            break
-        sense_time = time.time() - timestamp
-        print ("Sensed {0} channels in {1} seconds".format(len(freq_array), sense_time))
-        if len(_freq_array) == len(freq_array):
-            sec_per_bit = sense_time / len(_freq_array)
-            if _db.get_collection('utils') is None:
-                _db.create_collection('utils')
-            if len(list(_db.get_collection('utils').find())) == 0:
-                _db.get_collection('utils').insert_one({'sec_per_bit': sec_per_bit})
-            else:
-                prev_spb = list(_db.get_collection('utils').find())
-                # print prev_spb
-                if len(prev_spb) > 0:
-                    prev_spb = prev_spb[0]['sec_per_bit']
-                    query = {'sec_per_bit': prev_spb}
-                    _db.get_collection('utils').update_one(query,
-                                                           {'$set': {'sec_per_bit': sec_per_bit}})
+            sense_time = time.time() - timestamp
+            print ("Sensed {0} channels in {1} seconds".format(len(self.freq_array), sense_time))
+            if len(_freq_array) == len(self.freq_array):
+                sec_per_bit = sense_time / len(_freq_array)
+                if _db.get_collection('utils') is None:
+                    _db.create_collection('utils')
+                if len(list(_db.get_collection('utils').find())) == 0:
+                    _db.get_collection('utils').insert_one({'sec_per_bit': sec_per_bit})
                 else:
-                    _db.create_collection('utils').insert_one({'sec_per_bit': sec_per_bit})
-        decision_makers.update_random()
+                    prev_spb = list(_db.get_collection('utils').find())
+                    # print prev_spb
+                    if len(prev_spb) > 0:
+                        prev_spb = prev_spb[0]['sec_per_bit']
+                        query = {'sec_per_bit': prev_spb}
+                        _db.get_collection('utils').update_one(query,
+                                                               {'$set': {'sec_per_bit': sec_per_bit}})
+                    else:
+                        _db.create_collection('utils').insert_one({'sec_per_bit': sec_per_bit})
+            decision_makers.update_random()
+
+    def pause(self):
+        self.__flag.clear()
+
+    def resume(self, f):
+        self.__flag.set()
+        self.f = f
+        if self.f is not None:
+            try:
+                # print f, freq_array
+                self.freq_array = list(filter(lambda x: x != str(self.f), self.freq_array))
+                print ("New set of frequencies are ", self.freq_array)
+            except ValueError:
+                print ("No such frequency is available in choices")
+
+    def stop(self):
+        self.__flag.set()
+        self.__running.clear()
 
 
 def select_max(prev, curr):
@@ -101,9 +125,11 @@ def select_max(prev, curr):
     else:
         return prev
 
+
 def select_best(obj):
     if obj['card']['best_channel'] > 0.6:
         return obj
+
 
 def select_least(prev, obj):
     # select stochastic channels of idle prob greater than 60%
@@ -122,17 +148,19 @@ def main():
     _max_duty_cycle = _MAX_DUTY_CYCLE
     idle = False
     chan = False
-    pause = False
+    # pause = False
     # application initialization
     print("Application is initializing...")
     sense, rf_frontend = initialization()
-    inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause], name='inband-sensing')
+    inband_thread = InbandSensing(sense, None)
     inband_thread.start()
     # print 'stated in-band sensing'
     # # populate database at start for 30 minutes
     # print("populating database for 30 minutes to build prediction model")
-    # time.sleep(30 * 60)
+    # time.sleep(30)
     while idle is False:
+        # pause inband sensing
+        inband_thread.pause()
         while not chan:
             decision_makers.gen_class_est(model1)
             # query database for set of frequency based on time occupancy usage
@@ -145,36 +173,36 @@ def main():
                 # sense selected channels to build prediction database and for free channel
                 selected_freq = []
                 chan_result = []
-                # pause inband sensing
-                pause = True
-                inband_thread.join()
+                print ("Do the next thingc")
                 wait_time = time.time()
                 # print 'in-band sensing is paused...'
                 # FIXME move short term database to storage to reinitialize prediction
                 for i in range(len(selected_chan)):
-                    # print 'sending prompt...'
+                    print ('sending prompt...')
                     msg = utils.formatmsg('check')
-                    # print msg
+                    print(msg)
                     sense.sendall(msg.encode('utf-8'))
-                    while sense.recv(len('check')) != 'check':
+                    while sense.recv(len('check')) != 'check'.encode('utf-8'):
                         sense.sendall(msg.encode('utf-8'))
-                    # print 'prompt sent!'
+                    print('prompt sent!')
                     centre_freq = (selected_chan[i]['channel']['fmax'] + selected_chan[i]['channel']['fmin']) / 2.0
                     msg = utils.formatmsg(str(centre_freq))
-                    # print msg
+                    print (msg)
                     sense.sendall(msg.encode('utf-8'))
-                    while sense.recv(len(str(centre_freq))) != str(centre_freq):
+                    while sense.recv(len(str(centre_freq))) != str(centre_freq).encode('utf-8'):
+                        print (sense.recv(len(str(centre_freq))), str(centre_freq).encode('utf-8'))
                         sense.sendall(msg.encode('utf-8'))
+
                     selected_freq.append(centre_freq)
                     # get result of sensed channel from sensor
                     msglen = sense.recv(HEADERSIZE)
-                    while len(msglen) > 0:
+                    while msglen != ''.encode('utf-8'):
                         msg = sense.recv(int(msglen.decode('utf-8')))
                         # print msg
                         sense.sendall(msg)
+                        msg = pickle.loads(msg, encoding='bytes')
+                        print (msg)
                         msglen = ''.encode('utf-8')
-                        msg = pickle.loads(msg)
-                        # print msg
                     check = decision_makers.return_radio_chans(msg)
                     if check['state'] == 'free':
                         chan = True
@@ -240,12 +268,12 @@ def main():
                     odds.append({'card': card, 'idle_time_prob': idle_time_prob, 'chan_id': chan_result[i]['id']})
                 else:
                     odds.append({'card': card, 'chan_id': chan_result[i]['id']})
-# print odds
+        # print odds
         # select longest idle time or any best channel
         if len(idle_times) > 0:
             print (idle_times)
             if len(idle_times) > 1:
-                chan_id = reduce(select_max, idle_times)
+                chan_id = functools.reduce(select_max, idle_times)
                 selected_idle_time = chan_id['idle_time']
                 chan_id = chan_id['chan_id']
             else:
@@ -253,7 +281,7 @@ def main():
         else:
             if len(odds) > 0:
                 if len(odds) > 1:
-                    result = reduce(select_least, odds)
+                    result = functools.reduce(select_least, odds)
                     if result:
                         chan_id = result['chan_id']
                         selected_idle_time = _DEFAULT_WAIT_TIME
@@ -282,22 +310,15 @@ def main():
 
             msg = utils.formatmsg('NEW_FREQ={}'.format(new_freq))
             rf_frontend.send(msg.encode('utf-8'))
-            while rf_frontend.recv(len('NEW_FREQ={}'.format(new_freq))) != 'NEW_FREQ={}'.format(new_freq):
+            while rf_frontend.recv(len('NEW_FREQ={}'.format(new_freq))) != 'NEW_FREQ={}'.format(new_freq).encode('utf-8'):
                 rf_frontend.send(msg.encode('utf-8'))
-            timestamp = time.time()
+
             print ("Transmitting for {} seconds".format(selected_idle_time))
-            pause = False
-            inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause, new_freq],
-                                             name='inband-sensing')
-            inband_thread.start()
+            inband_thread.resume(new_freq)
             print ('started in-band sensing after {} seconds'.format(time.time() - wait_time))
             time.sleep(selected_idle_time)
-            pause = True
-            inband_thread.join()
-            pause = False
-            inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause],
-                                             name='inband-sensing')
-            inband_thread.start()
+            inband_thread.pause()
+            inband_thread.resume(None)
             chan_id = None
             chan = False
             msg = utils.formatmsg('STOP_COMM')
@@ -310,18 +331,18 @@ def main():
             if len(msglen) > 0:
                 msg = rf_frontend.recv(int(msglen.decode('utf-8')))
                 rf_frontend.send(msg)
-                if msg.split('=')[1] == 'True':
+                if msg.split('=')[1] == 'True'.encode('utf-8'):
                     idle = True
     # halt communication system
     print ("End of Communication..., DONE!")
-    pause = True
-    inband_thread.join()
+    # pause = True
+    # inband_thread.join()
 
 
 if __name__ == '__main__':
     try:
         main()
-    except (socket.error, KeyboardInterrupt ) as e:
+    except (socket.error, KeyboardInterrupt) as e:
         print (e)
         if _db.get_collection('long_term') is None:
             _db.get_collection('sensor').rename('long_term')

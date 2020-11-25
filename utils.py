@@ -1,5 +1,6 @@
 import numpy as np
 import sys
+import functools
 
 def formatmsg(msg):
     packet = '{length:<10}'.format(length=len(msg)) + msg
@@ -73,7 +74,7 @@ class TrafficClassification:
                 sep = np.array([self.N])
                 sys.stderr.write('WARNING: Choose a larger sample size for better prediction\n')
         # print(sep)
-        sep = reduce(get_nonzeros, sep)
+        sep = functools.reduce(get_nonzeros, sep)
         self.corr_stats = np.append(self.corr_stats, sep)
 
         self.tau_ave = np.average(self.corr_stats)

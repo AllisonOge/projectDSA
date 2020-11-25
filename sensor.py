@@ -41,8 +41,8 @@ import utils
 
 HEADERSIZE = 10
 IP_ADDRESS = '10.0.0.1'
+# IP_ADDRESS = '127.0.0.1'
 SENSOR_PORT = 12345
-
 sys.stderr.write(
     "Warning: this may have issues on some machines+Python version combinations to seg fault due to the callback in bin_statitics.\n\n")
 
@@ -314,12 +314,14 @@ def main_loop(tb):
             msglen = mysckt.recv(HEADERSIZE)
             # print msglen
             msg = mysckt.recv(int(msglen.decode('utf-8')))  # throw value error when empty
-            mysckt.send(msg)
+            mysckt.sendall(msg)
+            print msg
             # ensure you parse only when request is made
-            if msg == 'check':
+            if msg == 'check'.encode('utf-8'):
                 in_band = False
                 msg = ''
             new_freq = float(msg.decode('utf-8'))  # throw value error when empty
+
             print "Tuning to new frequency", new_freq
             tb.center_freq = new_freq
 

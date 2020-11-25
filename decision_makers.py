@@ -2,6 +2,7 @@
 from pymongo import MongoClient
 import numpy as np
 import datetime
+import functools
 import pandas as pd
 # from current directory
 import utils
@@ -50,7 +51,7 @@ def gen_class_est(model):
             else:
                 bit_seq = db_gen_seq(channel['_id'])
             # classify bit sequence
-            bit_seq = map(gen_seq, bit_seq)
+            bit_seq = list(map(gen_seq, bit_seq))
             # print bit_seq
             if len(bit_seq) >= _SAMPLE_LEN:
                 period = 1.0
@@ -77,7 +78,7 @@ def gen_class_est(model):
                 traffic_class = 'UNKNOWN'
                 period = 0.0
 
-            result = map(lambda bit: bit == 1, bit_seq)
+            result = list(map(lambda bit: bit == 1, bit_seq))
             spc = 0
             for i in range(len(result)):
                 if result[i]:
@@ -168,7 +169,7 @@ def update_random():
                                                                        'avg_idle_time': float(
                                                                            np.average(idle_time_stats))}})
             # get total idle time
-            total_idle_time = reduce(flatten, idle_time_stats)
+            total_idle_time = functools.reduce(flatten, idle_time_stats)
             # print "Total idle time per channel", total_idle_time
             idle_best = 0
             median_time = np.median(all_idle_times)
@@ -189,21 +190,21 @@ def update_random():
 
 
 def return_radio_chans(result):
-    diff = float(result['signal']['amplitude']) - float(result['noise_floor'])
+    diff = float(result[b'signal'][b'amplitude']) - float(result[b'noise_floor'])
     if diff >= _THRESHOLD_DB:
         state = 'busy'
     else:
         state = 'free'
     print ('Channel state ', state)
     return {
-        'id': result['signal']['channel'],
+        'id': result[b'signal'][b'channel'],
         'state': state
     }
 
 
 def get_t0(id):
     bit_seq = db_gen_seq(id)
-    bit_seq = map(gen_seq, bit_seq)[::-1]
+    bit_seq = list(map(gen_seq, bit_seq)[::-1])
     t0 = 0
     for i in range(len(bit_seq)):
         if bit_seq[0] != 0:
