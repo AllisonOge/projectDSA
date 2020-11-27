@@ -1,5 +1,6 @@
 # DECISION MAKERS.py
 from pymongo import MongoClient
+from bson.objectid import ObjectId
 import numpy as np
 import datetime
 import functools
@@ -11,7 +12,7 @@ import utils
 myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
 
-_THRESHOLD_DB = 22
+_THRESHOLD_DB = 18
 _SAMPLE_LEN = 50
 _TRAFFIC_CLASS = 'UNKNOWN'
 
@@ -29,9 +30,25 @@ def gen_seq(obj):
 
 def db_gen_seq(id):
     filt = [
-        {'$match': {'signal.channel': id}},
-        {'$project': {
-            'busy': {'$gte': [{'$subtract': ['$signal.amplitude', '$noise_floor']}, _THRESHOLD_DB]}}}]
+        {
+            '$match': {
+                'signal.channel': ObjectId(id),
+                'in_band': True
+            }
+        }, {
+            '$project': {
+                'busy': {
+                    '$gt': [
+                        {
+                            '$subtract': [
+                                '$signal.amplitude', '$noise_floor'
+                            ]
+                        }, _THRESHOLD_DB
+                    ]
+                }
+            }
+        }
+    ]
     return list(_db.get_collection('sensor').aggregate(filt))
 
 
@@ -45,7 +62,7 @@ def gen_class_est(model):
             filt = [
                 {'$match': {'signal.channel': channel['_id']}},
                 {'$project': {
-                    'busy': {'$gte': [{'$subtract': ['$signal.amplitude', '$noise_floor']}, _THRESHOLD_DB]}}}]
+                    'busy': {'$gt': [{'$subtract': ['$signal.amplitude', '$noise_floor']}, _THRESHOLD_DB]}}}]
             if _db.get_collection('long_term') is not None:
                 bit_seq = list(_db.get_collection('long_term').aggregate(filt)) + db_gen_seq(channel['_id'])
             else:
@@ -60,15 +77,19 @@ def gen_class_est(model):
                     for i in range(len(bit_seq) // _SAMPLE_LEN):
                         if 'traffic_classifier' not in locals():
                             traffic_classifier = utils.TrafficClassification(_SAMPLE_LEN)
-                        # print len(bit_seq[_SAMPLE_LEN * i:_SAMPLE_LEN * (i + 1)])
+                        # print("length of sequence is ", len(bit_seq[_SAMPLE_LEN * i:_SAMPLE_LEN * (i + 1)]))
                         traffic_class, period = traffic_classifier.classify(
                             bit_seq[_SAMPLE_LEN * i:_SAMPLE_LEN * (i + 1)])
-                        bit_seq_pd = pd.DataFrame(bit_seq[_SAMPLE_LEN * i:_SAMPLE_LEN * (i + 1)], dtype=int)
-                        print (model.predict(bit_seq_pd))
+                        # print ("Hi", bit_seq[_SAMPLE_LEN * i:_SAMPLE_LEN * (i + 1)])
+                        bit_seq_pd = pd.DataFrame([bit_seq[_SAMPLE_LEN * i:_SAMPLE_LEN * (i + 1)]], dtype=int)
+                        # print(bit_seq_pd)
+                        model.predict(bit_seq_pd)
                         if model.predict(bit_seq_pd) == 0:
                             traffic_class = "STOCHASTIC"
+                            print("TRAFFIC IS STOCHASTIC")
                         else:
                             traffic_class = "PERIODIC"
+                            print("TRAFFIC IS PERIODIC")
                             period = traffic_classifier.get_period()
                 else:
                     traffic_class = _db.get_collection('time_distro').find_one({'channel_id': channel['_id']})[
@@ -78,11 +99,7 @@ def gen_class_est(model):
                 traffic_class = 'UNKNOWN'
                 period = 0.0
 
-            result = list(map(lambda bit: bit == 1, bit_seq))
-            spc = 0
-            for i in range(len(result)):
-                if result[i]:
-                    spc += 1
+            spc = functools.reduce(flatten, bit_seq)
             # print len(spc), channel['channel']['counts']
             newdc = float(spc) / float(channel['channel']['counts'])
             # print 'new traffic estimate is ', newdc

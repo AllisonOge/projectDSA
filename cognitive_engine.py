@@ -5,7 +5,6 @@ import socket
 import threading
 import time
 import pickle
-import six
 import numpy as np
 import decision_makers
 import random
@@ -19,7 +18,7 @@ IP_ADDRESS = '10.0.0.1'
 SENSOR_PORT = 12345
 RF_PORT = 12347
 
-_MAX_DUTY_CYCLE = 0.4
+_MAX_DUTY_CYCLE = 0.6
 
 myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
@@ -54,32 +53,109 @@ def initialization():
     # perform other socket initializations
     return sensing, rf_frontend
 
+# # python 3 version of threading with pause and resume control
+# class InbandSensing(threading.Thread):
+#     def __init__(self, sense, f):
+#         super(InbandSensing, self).__init__(name='inband-sensing')
+#         self.__flag = threading.Event()
+#         self.__flag.set()
+#         self.__running = threading.Event()
+#         self.__running.set()
+#         self.f = f
+#         self.sense = sense
+#         self.freq_array = _freq_array
+#
+#     def run(self):
+#         while self.__running.isSet():
+#             timestamp = time.time()
+#             print ('Scanning frequencies.. ', self.freq_array)
+#             for freq in self.freq_array:
+#                 self.__flag.wait()
+#                 msg = utils.formatmsg(freq)
+#                 # print msg
+#                 self.sense.sendall(msg.encode('utf-8'))
+#                 while self.sense.recv(len(freq)) != freq.encode('utf-8'):
+#                     print("hi", self.sense.recv(len(freq)), freq.encode('utf-8'))
+#                     self.sense.sendall(msg.encode('utf-8'))
+#                     break
+#                 print("done")
+#
+#             sense_time = time.time() - timestamp
+#             print ("Sensed {0} channels in {1} seconds".format(len(self.freq_array), sense_time))
+#             if len(_freq_array) == len(self.freq_array):
+#                 sec_per_bit = sense_time / len(_freq_array)
+#                 if _db.get_collection('utils') is None:
+#                     _db.create_collection('utils')
+#                 if len(list(_db.get_collection('utils').find())) == 0:
+#                     _db.get_collection('utils').insert_one({'sec_per_bit': sec_per_bit})
+#                 else:
+#                     prev_spb = list(_db.get_collection('utils').find())
+#                     # print prev_spb
+#                     if len(prev_spb) > 0:
+#                         prev_spb = prev_spb[0]['sec_per_bit']
+#                         query = {'sec_per_bit': prev_spb}
+#                         _db.get_collection('utils').update_one(query,
+#                                                                {'$set': {'sec_per_bit': sec_per_bit}})
+#                     else:
+#                         _db.create_collection('utils').insert_one({'sec_per_bit': sec_per_bit})
+#             decision_makers.update_random()
+#
+#     def pause(self):
+#         self.__flag.clear()
+#
+#     def resume(self, f):
+#         self.__flag.set()
+#         self.f = f
+#         if self.f is not None:
+#             try:
+#                 # print f, freq_array
+#                 self.freq_array = list(filter(lambda x: x != str(self.f), self.freq_array))
+#                 print ("New set of frequencies are ", self.freq_array)
+#             except ValueError:
+#                 print ("No such frequency is available in choices")
+#         else:
+#             self.freq_array = _freq_array
+#             print ("Frequency set is ", self.freq_array)
+#
+#     def stop(self):
+#         self.__flag.set()
+#         self.__running.clear()
+
 # python 3 version of threading with pause and resume control
 class InbandSensing(threading.Thread):
     def __init__(self, sense, f):
         super(InbandSensing, self).__init__(name='inband-sensing')
-        self.__flag = threading.Event()
-        self.__flag.set()
         self.__running = threading.Event()
         self.__running.set()
+        self.__stop = False
         self.f = f
         self.sense = sense
         self.freq_array = _freq_array
 
     def run(self):
+        if self.f is not None:
+            try:
+                # print f, freq_array
+                self.freq_array = list(filter(lambda x: x != str(self.f), self.freq_array))
+                print ("New set of frequencies are ", self.freq_array)
+            except ValueError:
+                print ("No such frequency is available in choices")
         while self.__running.isSet():
             timestamp = time.time()
-            print ('Scanning frequencies.. ', self.freq_array)
+            # print ('Scanning frequencies.. ', self.freq_array)
             for freq in self.freq_array:
-                self.__flag.wait()
+                if self.__stop:
+                    break
                 msg = utils.formatmsg(freq)
                 # print msg
                 self.sense.sendall(msg.encode('utf-8'))
                 while self.sense.recv(len(freq)) != freq.encode('utf-8'):
-                    print("hi", self.sense.recv(len(freq)), freq.encode('utf-8'))
+                    # print( self.sense.recv(len(freq)), freq.encode('utf-8'))
                     self.sense.sendall(msg.encode('utf-8'))
-                print("done")
-
+                    break
+                # print("done")
+            if self.__stop:
+                break
             sense_time = time.time() - timestamp
             print ("Sensed {0} channels in {1} seconds".format(len(self.freq_array), sense_time))
             if len(_freq_array) == len(self.freq_array):
@@ -100,24 +176,9 @@ class InbandSensing(threading.Thread):
                         _db.create_collection('utils').insert_one({'sec_per_bit': sec_per_bit})
             decision_makers.update_random()
 
-    def pause(self):
-        self.__flag.clear()
-
-    def resume(self, f):
-        self.__flag.set()
-        self.f = f
-        if self.f is not None:
-            try:
-                # print f, freq_array
-                self.freq_array = list(filter(lambda x: x != str(self.f), self.freq_array))
-                print ("New set of frequencies are ", self.freq_array)
-            except ValueError:
-                print ("No such frequency is available in choices")
-
     def stop(self):
-        self.__flag.set()
+        self.__stop = True
         self.__running.clear()
-
 
 def select_max(prev, curr):
     if curr['idle_time'] > prev['idle_time']:
@@ -127,18 +188,17 @@ def select_max(prev, curr):
 
 
 def select_best(obj):
+    # select stochastic channels of idle prob greater than 60%
     if obj['card']['best_channel'] > 0.6:
         return obj
 
 
 def select_least(prev, obj):
-    # select stochastic channels of idle prob greater than 60%
-    if obj['card']['best_channel'] > 0.6:
-        # pick the best idle time distro of lesser prob of exponential idle time
-        if obj['idle_time_prob'] < prev['idle_time_prob']:
-            return obj
-        else:
-            return prev
+    # pick the best idle time distro of lesser prob of exponential idle time
+    if obj['idle_time_prob'] < prev['idle_time_prob']:
+        return obj
+    else:
+        return prev
 
 
 def main():
@@ -148,19 +208,24 @@ def main():
     _max_duty_cycle = _MAX_DUTY_CYCLE
     idle = False
     chan = False
-    # pause = False
     # application initialization
     print("Application is initializing...")
     sense, rf_frontend = initialization()
+    # # populate database at start for 30 minutes
+    while input("Start DSA: ").lower() != 'y':
+        print("Enter a valid input")
+    # # send prompt to TX_FRONTEND to switch
+    # msg = utils.formatmsg("SWITCH=True")
+    # rf_frontend.sendall(msg.encode('utf-8'))
+    # while rf_frontend.recv(len("SWITCH=True")) != "SWITCH=True".encode('utf-8'):
+    #     rf_frontend.sendall(msg.encode('utf-8'))
     inband_thread = InbandSensing(sense, None)
     inband_thread.start()
     # print 'stated in-band sensing'
-    # # populate database at start for 30 minutes
-    # print("populating database for 30 minutes to build prediction model")
-    # time.sleep(30)
+    print("populating database for 30 minutes to build prediction model")
+    time.sleep(60 * 60)
     while idle is False:
-        # pause inband sensing
-        inband_thread.pause()
+        # print ("Do the next thing!!!")
         while not chan:
             decision_makers.gen_class_est(model1)
             # query database for set of frequency based on time occupancy usage
@@ -173,18 +238,20 @@ def main():
                 # sense selected channels to build prediction database and for free channel
                 selected_freq = []
                 chan_result = []
-                print ("Do the next thingc")
                 wait_time = time.time()
+                # pause inband sensing
+                inband_thread.stop()
+                inband_thread.join()
                 # print 'in-band sensing is paused...'
                 # FIXME move short term database to storage to reinitialize prediction
                 for i in range(len(selected_chan)):
-                    print ('sending prompt...')
+                    # print ('sending prompt...')
                     msg = utils.formatmsg('check')
-                    print(msg)
+                    # print(msg)
                     sense.sendall(msg.encode('utf-8'))
                     while sense.recv(len('check')) != 'check'.encode('utf-8'):
                         sense.sendall(msg.encode('utf-8'))
-                    print('prompt sent!')
+                    # print('prompt sent!')
                     centre_freq = (selected_chan[i]['channel']['fmax'] + selected_chan[i]['channel']['fmin']) / 2.0
                     msg = utils.formatmsg(str(centre_freq))
                     print (msg)
@@ -196,13 +263,20 @@ def main():
                     selected_freq.append(centre_freq)
                     # get result of sensed channel from sensor
                     msglen = sense.recv(HEADERSIZE)
-                    while msglen != ''.encode('utf-8'):
+                    if msglen != ''.encode('utf-8'):
                         msg = sense.recv(int(msglen.decode('utf-8')))
+                        # custom flushing hack
+                        try:
+                            sense.settimeout(.2)
+                            msglen = sense.recv(HEADERSIZE)
+                            msg = sense.recv(int(msglen.decode('utf-8')))  # throw value error when empty
+                        except socket.timeout:
+                            pass
+                        sense.settimeout(None)
                         # print msg
                         sense.sendall(msg)
                         msg = pickle.loads(msg, encoding='bytes')
-                        print (msg)
-                        msglen = ''.encode('utf-8')
+                        # print (msg)
                     check = decision_makers.return_radio_chans(msg)
                     if check['state'] == 'free':
                         chan = True
@@ -260,14 +334,11 @@ def main():
                 # use best_chan to generate wait time exponential distro
                 idle_time_prob = 0
                 # get the probability of wait time distro within 9 seconds and 1 minute 30 secs
-                if chan_distro['avg_idle_time'] > 0:
-                    for j in range(9, 90):
-                        idle_time_prob += (1 / chan_distro['avg_idle_time']) * math.exp(
-                            -(j / chan_distro['avg_idle_time']))
-                    print("Idle time probability is ", idle_time_prob, " for channel ", chan_result[i]['id'])
-                    odds.append({'card': card, 'idle_time_prob': idle_time_prob, 'chan_id': chan_result[i]['id']})
-                else:
-                    odds.append({'card': card, 'chan_id': chan_result[i]['id']})
+                for j in range(9, 90):
+                    idle_time_prob += (1 / chan_distro['avg_idle_time']) * math.exp(
+                        -(j / chan_distro['avg_idle_time']))
+                print("Idle time probability is ", idle_time_prob, " for channel ", chan_result[i]['id'])
+                odds.append({'card': card, 'idle_time_prob': idle_time_prob, 'chan_id': chan_result[i]['id']})
         # print odds
         # select longest idle time or any best channel
         if len(idle_times) > 0:
@@ -277,26 +348,13 @@ def main():
                 selected_idle_time = chan_id['idle_time']
                 chan_id = chan_id['chan_id']
             else:
-                chan_id = idle_times[0]['idle_time']
+                selected_idle_time = idle_times[0]['idle_time']
+                chan_id = idle_times[0]['chan_id']
         else:
             if len(odds) > 0:
-                if len(odds) > 1:
-                    result = functools.reduce(select_least, odds)
-                    if result:
-                        chan_id = result['chan_id']
-                        selected_idle_time = _DEFAULT_WAIT_TIME
-                    else:
-                        result = map(select_best, odds)
-                        for i in range(len(result)):
-                            if result[i]:
-                                chan_id = result[i]['chan_id']
-                                selected_idle_time = _DEFAULT_WAIT_TIME
-                                break
-                            else:
-                                chan_id = None
-                else:
-                    chan_id = odds[0]['chan_id']
-                    selected_idle_time = _DEFAULT_WAIT_TIME
+                result = functools.reduce(select_least, odds)
+                chan_id = result['chan_id']
+                selected_idle_time = _DEFAULT_WAIT_TIME
             else:
                 print ('unexpected as channel set is not empty, FIXME!!!')
 
@@ -314,11 +372,15 @@ def main():
                 rf_frontend.send(msg.encode('utf-8'))
 
             print ("Transmitting for {} seconds".format(selected_idle_time))
-            inband_thread.resume(new_freq)
+            inband_thread = InbandSensing(sense, new_freq)
+            inband_thread.start()
             print ('started in-band sensing after {} seconds'.format(time.time() - wait_time))
             time.sleep(selected_idle_time)
-            inband_thread.pause()
-            inband_thread.resume(None)
+            inband_thread.stop()
+            inband_thread.join()
+            inband_thread = InbandSensing(sense, None)
+            inband_thread.start()
+            print ("in-band sensing has started")
             chan_id = None
             chan = False
             msg = utils.formatmsg('STOP_COMM')
@@ -331,12 +393,13 @@ def main():
             if len(msglen) > 0:
                 msg = rf_frontend.recv(int(msglen.decode('utf-8')))
                 rf_frontend.send(msg)
-                if msg.split('=')[1] == 'True'.encode('utf-8'):
+                # print("HI", msg)
+                if msg.split(b'=')[1] == 'True'.encode('utf-8'):
                     idle = True
     # halt communication system
     print ("End of Communication..., DONE!")
-    # pause = True
-    # inband_thread.join()
+    inband_thread.stop()
+    inband_thread.join()
 
 
 if __name__ == '__main__':

@@ -15,12 +15,17 @@ def txtformat(lnght):
 
 def get_freq():
     freqs = []
-    start_freq = 2390e6
-    stop_freq = 2408e6
-    nchan = 9
     # start_freq = 900e6
     # stop_freq = 910e6
     # nchan = 9
+    # # TESTING
+    # start_freq = 2390e6
+    # stop_freq = 2408e6
+    # nchan = 9
+    # PROJECT CHANNELS
+    start_freq = 2389.5e6
+    stop_freq = 2407.5e6
+    nchan = 6
     step = (stop_freq - start_freq) / nchan
     for i in range(nchan):
         if i == 0:

@@ -313,9 +313,17 @@ def main_loop(tb):
             # receive header
             msglen = mysckt.recv(HEADERSIZE)
             # print msglen
-            msg = mysckt.recv(int(msglen.decode('utf-8')))  # throw value error when empty
+            msg = mysckt.recv(int(msglen.decode('utf-8')))
+            # custom flushing hack
+            try:
+                mysckt.settimeout(.2)
+                msglen = mysckt.recv(HEADERSIZE)
+                msg = mysckt.recv(int(msglen.decode('utf-8')))  # throw value error when empty
+            except socket.timeout:
+                pass
+            mysckt.settimeout(None)
             mysckt.sendall(msg)
-            print msg
+            # print msg
             # ensure you parse only when request is made
             if msg == 'check'.encode('utf-8'):
                 in_band = False
