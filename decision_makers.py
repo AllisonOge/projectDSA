@@ -13,8 +13,9 @@ myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
 
 _THRESHOLD_DB = 18
-_SAMPLE_LEN = 50
+_SAMPLE_LEN = 100
 _TRAFFIC_CLASS = 'UNKNOWN'
+
 
 class BestMedianChannels:
     def __init__(self):
@@ -22,15 +23,16 @@ class BestMedianChannels:
         self.median_idle_time = 0
 
     def set_idle_times(self, idle_time_stats):
-        self.all_idle_times == np.append(self.all_idle_times, idle_time)
+        self.all_idle_times = np.append(self.all_idle_times, idle_time_stats)
 
-        
     def get_best_channels(self, idle_time_stats):
         # check that the array is not empty
         if len(self.all_idle_times) == 0:
             return 0
+        if len(idle_time_stats) == 0:
+            return 0
         idle_best = 0
-        self.median_idle_time =  np.median(self.all_idle_times)
+        self.median_idle_time = np.median(self.all_idle_times)
         # get total idle time
         total_idle_time = functools.reduce(flatten, idle_time_stats)
         # print "Total idle time per channel", total_idle_time
@@ -44,7 +46,7 @@ class BestMedianChannels:
             return time_occ_prob
         else:
             return 0
-           
+
 
 def flatten(prev, curr):
     return prev + curr
@@ -90,7 +92,7 @@ def gen_class_est(model):
         # use only in_band sensing to classify channels
         for channel in channels:
             filt = [
-                {'$match': {'signal.channel': channel['_id']}, 'in_band': True},
+                {'$match': {'signal.channel': channel['_id'], 'in_band': True}},
                 {'$project': {
                     'busy': {'$gt': [{'$subtract': ['$signal.amplitude', '$noise_floor']}, _THRESHOLD_DB]}}}]
             if _db.get_collection('long_term') is not None:
@@ -121,7 +123,7 @@ def gen_class_est(model):
                             traffic_class = "PERIODIC"
                             period = traffic_classifier.get_period()
                             print("TRAFFIC IS PERIODIC with period ", period)
-                            
+
                 else:
                     traffic_class = _db.get_collection('time_distro').find_one({'channel_id': channel['_id']})[
                         'traffic_class']
@@ -138,7 +140,7 @@ def gen_class_est(model):
             _db.get_collection('channels').find_one_and_update(query, {'$set': {'channel.occ_estimate': newdc}})
             # update database
             if _db.get_collection("time_distro") is None:
-                print ('time distro has not being initialized yet, FIXME!!!')
+                print('time distro has not being initialized yet, FIXME!!!')
                 pass
             else:
                 if traffic_class == 'PERIODIC':
@@ -151,9 +153,9 @@ def gen_class_est(model):
         return True
     else:
         if len(channels) < 1:
-            print ("Channel is empty, could not update occupancy!!!")
+            print("Channel is empty, could not update occupancy!!!")
         else:
-            print ("New channel set, could not update occupancy!!!")
+            print("New channel set, could not update occupancy!!!")
         return False
 
 
@@ -174,12 +176,12 @@ def update_random():
             idle_time = 0
             idle_time_stats = np.array([])
             for ind in range(len(channel_seq)):
-                if channel_seq[ind]['idle']:
+                if not channel_seq[ind]['idle']:
                     if ind > 0:
-                        if channel_seq[ind - 1]['idle'] == False and idle_start != 0:
+                        if channel_seq[ind - 1]['idle'] and idle_start != 0:
                             # idle_time = channel_seq[ind]['date'].timestamp() - idle_start
                             idle_time = (channel_seq[ind]['date'] - datetime.datetime(1970, 1,
-                                                                                    1)).total_seconds() - idle_start
+                                                                                      1)).total_seconds() - idle_start
                             idle_time_stats = np.append(idle_time_stats, idle_time)
                         else:
                             idle_start = 0
@@ -187,43 +189,46 @@ def update_random():
                     if idle_start == 0 and ind == 0:
                         # idle_start = channel_seq[ind]['date'].timestamp()
                         idle_start = (channel_seq[ind]['date'] - datetime.datetime(1970, 1, 1)).total_seconds()
-                        print(idle_start)
+                        # print(idle_start)
                     if ind > 0:
-                        if channel_seq[ind - 1]['idle']:
+                        if not channel_seq[ind - 1]['idle']:
                             # idle_start = channel_seq[ind]['date'].timestamp()
                             idle_start = (channel_seq[ind]['date'] - datetime.datetime(1970, 1, 1)).total_seconds()
-                            print(idle_start)
+                            # print(idle_start)
                         # idle_time = channel_seq[ind]['date'].timestamp() - idle_start
                         idle_time = (channel_seq[ind]['date'] - datetime.datetime(1970, 1,
-                                                                                    1)).total_seconds() - idle_start
-            idle_start = 0          
+                                                                                  1)).total_seconds() - idle_start
+            idle_start = 0
+            # print("idle time stats of a channel is ", idle_time_stats)
             get_best_median_channs.set_idle_times(idle_time_stats)
+            if len(idle_time_stats) > 0:
+                avg_idle_time = float(np.average(idle_time_stats))
+            else:
+                avg_idle_time = 0
             # save to database
             if _db.get_collection("time_distro") is None:
                 _db.create_collection("time_distro")
             if _db.get_collection("time_distro").find_one({'channel_id': channel['_id']}) is None:
                 _db.get_collection("time_distro").insert_one(
                     {'channel_id': channel['_id'], 'idle_time_stats': idle_time_stats.tolist(),
-                     'avg_idle_time': float(np.average(idle_time_stats)), 'traffic_class': _TRAFFIC_CLASS})
+                     'avg_idle_time': avg_idle_time, 'traffic_class': _TRAFFIC_CLASS})
             else:
                 _db.get_collection("time_distro").update_one({'channel_id': channel['_id']},
                                                              {'$set': {'idle_time_stats': idle_time_stats.tolist(),
-                                                                       'avg_idle_time': float(
-                                                                           np.average(idle_time_stats))}})
-            
+                                                                       'avg_idle_time': avg_idle_time}})
+
         # get the best channels after updating all channels
         for chan in channels:
-            its = np.array(_db.get_collection('time_distro').find({'channel_id': chan['_id']})['idle_time_stats'])
+            its = np.array(_db.get_collection('time_distro').find_one({'channel_id': chan['_id']})['idle_time_stats'])
+            # print('idle time stats array is ', its)
             time_occ_prob = get_best_median_channs.get_best_channels(its)
-
             # update channels collection
             query = {'channel.fmin': chan['channel']['fmin'], 'channel.fmax': chan['channel']['fmax']}
             _db.get_collection('channels').find_one_and_update(query, {'$set': {'best_channel': time_occ_prob}})
-            
 
         return True
     else:
-        print ("Channel is empty, could not predict!!!")
+        print("Channel is empty, could not predict!!!")
         return False
 
 
@@ -233,7 +238,7 @@ def return_radio_chans(result):
         state = 'busy'
     else:
         state = 'free'
-    print ('Channel state ', state)
+    print('Channel state ', state)
     return {
         'id': result[b'signal'][b'channel'],
         'state': state
@@ -250,7 +255,7 @@ def get_t0(id):
         else:
             if i > 0:
                 if not (bit_seq[i - 1] and bit_seq[i]):
-                    print (bit_seq[i - 1], bit_seq[i])
+                    print(bit_seq[i - 1], bit_seq[i])
                     t0 += 1
                 else:
                     break
