@@ -16,6 +16,35 @@ _THRESHOLD_DB = 18
 _SAMPLE_LEN = 50
 _TRAFFIC_CLASS = 'UNKNOWN'
 
+class BestMedianChannels:
+    def __init__(self):
+        self.all_idle_times = np.array([])
+        self.median_idle_time = 0
+
+    def set_idle_times(self, idle_time_stats):
+        self.all_idle_times == np.append(self.all_idle_times, idle_time)
+
+        
+    def get_best_channels(self, idle_time_stats):
+        # check that the array is not empty
+        if len(self.all_idle_times) == 0:
+            return 0
+        idle_best = 0
+        self.median_idle_time =  np.median(self.all_idle_times)
+        # get total idle time
+        total_idle_time = functools.reduce(flatten, idle_time_stats)
+        # print "Total idle time per channel", total_idle_time
+        # print all_idle_times, median_time
+        for i in range(len(idle_time_stats)):
+            if idle_time_stats[i] >= self.median_idle_time:
+                idle_best += idle_time_stats[i]
+        if total_idle_time > 0:
+            time_occ_prob = idle_best / total_idle_time
+            # print time_occ
+            return time_occ_prob
+        else:
+            return 0
+           
 
 def flatten(prev, curr):
     return prev + curr
@@ -58,9 +87,10 @@ def gen_class_est(model):
     channels_distro = list(_db.get_collection('time_distro').find())
     if len(channels) > 0 and len(channels) == len(channels_distro):
         # print "Updating the traffic estimate for all channels"
+        # use only in_band sensing to classify channels
         for channel in channels:
             filt = [
-                {'$match': {'signal.channel': channel['_id']}},
+                {'$match': {'signal.channel': channel['_id']}, 'in_band': True},
                 {'$project': {
                     'busy': {'$gt': [{'$subtract': ['$signal.amplitude', '$noise_floor']}, _THRESHOLD_DB]}}}]
             if _db.get_collection('long_term') is not None:
@@ -89,8 +119,9 @@ def gen_class_est(model):
                             print("TRAFFIC IS STOCHASTIC")
                         else:
                             traffic_class = "PERIODIC"
-                            print("TRAFFIC IS PERIODIC")
                             period = traffic_classifier.get_period()
+                            print("TRAFFIC IS PERIODIC with period ", period)
+                            
                 else:
                     traffic_class = _db.get_collection('time_distro').find_one({'channel_id': channel['_id']})[
                         'traffic_class']
@@ -131,7 +162,7 @@ def update_random():
     channels = list(_db.get_collection('channels').find())
     if len(channels) > 0:
         # print "idle time prediction of all channels"
-        all_idle_times = np.array([])
+        get_best_median_channs = BestMedianChannels()
         for channel in channels:
             filt = [
                 {'$match': {'signal.channel': channel['_id'], 'in_band': True}},
@@ -142,37 +173,31 @@ def update_random():
             idle_start = 0
             idle_time = 0
             idle_time_stats = np.array([])
-            for i in range(len(channel_seq)):
-                if channel_seq[i]['idle']:
-                    if idle_start == 0:
-                        # idle_start = datetime.datetime.strptime(channel_seq[i]['date'],
-                        #                                         '%Y-%m-%dT%X.%f%z').timestamp()
-                        idle_start = (channel_seq[i]['date'] - datetime.datetime(1970, 1, 1)).total_seconds()
-                        # print idle_start
-                    if i > 0:
-                        if channel_seq[i - 1]['idle']:
-                            # idle_time = datetime.datetime.strptime(str(channel_seq[i]['date']),
-                            #                                        '%Y-%m-%dT%X.%f%z').timestamp() - idle_start
-                            idle_time = (channel_seq[i]['date'] - datetime.datetime(1970, 1,
+            for ind in range(len(channel_seq)):
+                if channel_seq[ind]['idle']:
+                    if ind > 0:
+                        if channel_seq[ind - 1]['idle'] == False and idle_start != 0:
+                            # idle_time = channel_seq[ind]['date'].timestamp() - idle_start
+                            idle_time = (channel_seq[ind]['date'] - datetime.datetime(1970, 1,
                                                                                     1)).total_seconds() - idle_start
-                            # print "Idle time is ", idle_time
-                        else:
-                            # idle_time = datetime.datetime.strptime(str(channel_seq[i]['date']),
-                            #                                        '%Y-%m-%dT%X.%f%z').timestamp() - datetime.datetime.strptime(
-                            #     channel_seq[i - 1]['date'], '%Y-%m-%dT%X.%f%z').timestamp()
-                            idle_time = (channel_seq[i]['date'] - datetime.datetime(1970, 1, 1)).total_seconds() - (
-                                    channel_seq[i - 1]['date'] - datetime.datetime(1970, 1, 1)).total_seconds()
-                else:
-                    if i > 0:
-                        if channel_seq[i - 1]['idle']:
-                            # print "Idle time is ", idle_time
                             idle_time_stats = np.append(idle_time_stats, idle_time)
+                        else:
                             idle_start = 0
-            # print "Idle time is ", idle_time
-            idle_time_stats = np.append(idle_time_stats, idle_time)
-
-            for i in range(len(idle_time_stats)):
-                all_idle_times = np.append(all_idle_times, idle_time_stats[i])
+                else:
+                    if idle_start == 0 and ind == 0:
+                        # idle_start = channel_seq[ind]['date'].timestamp()
+                        idle_start = (channel_seq[ind]['date'] - datetime.datetime(1970, 1, 1)).total_seconds()
+                        print(idle_start)
+                    if ind > 0:
+                        if channel_seq[ind - 1]['idle']:
+                            # idle_start = channel_seq[ind]['date'].timestamp()
+                            idle_start = (channel_seq[ind]['date'] - datetime.datetime(1970, 1, 1)).total_seconds()
+                            print(idle_start)
+                        # idle_time = channel_seq[ind]['date'].timestamp() - idle_start
+                        idle_time = (channel_seq[ind]['date'] - datetime.datetime(1970, 1,
+                                                                                    1)).total_seconds() - idle_start
+            idle_start = 0          
+            get_best_median_channs.set_idle_times(idle_time_stats)
             # save to database
             if _db.get_collection("time_distro") is None:
                 _db.create_collection("time_distro")
@@ -185,20 +210,14 @@ def update_random():
                                                              {'$set': {'idle_time_stats': idle_time_stats.tolist(),
                                                                        'avg_idle_time': float(
                                                                            np.average(idle_time_stats))}})
-            # get total idle time
-            total_idle_time = functools.reduce(flatten, idle_time_stats)
-            # print "Total idle time per channel", total_idle_time
-            idle_best = 0
-            median_time = np.median(all_idle_times)
-            # print all_idle_times, median_time
-            for i in range(len(idle_time_stats)):
-                if idle_time_stats[i] >= median_time:
-                    idle_best += idle_time_stats[i]
-            if total_idle_time > 0:
-                time_occ = idle_best / total_idle_time
-                # print time_occ
-                query = {'channel.fmin': channel['channel']['fmin'], 'channel.fmax': channel['channel']['fmax']}
-                _db.get_collection('channels').find_one_and_update(query, {'$set': {'best_channel': time_occ}})
+            
+        # get the best channels after updating all channels
+        for chan in channels:
+            its = np.array(_db.get_collection('time_distro').find({'channel_id': chan['_id']})['idle_time_stats'])
+            time_occ_prob = get_best_median_channs.get_best_channels(its)
+
+            # update channels collection
+            _db.get_collection('channels').find_one_and_update({'_id': chan['_id']}, {'best_channel': time_occ_prob})
 
         return True
     else:

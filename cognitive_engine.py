@@ -24,7 +24,7 @@ myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
 _freq_array = utils.get_freq()
 
-_DEFAULT_WAIT_TIME = 2.0
+_DEFAULT_WAIT_TIME = 6.0
 HEADERSIZE = 10
 
 
@@ -121,7 +121,7 @@ def initialization():
 #         self.__flag.set()
 #         self.__running.clear()
 
-# python 3 version of threading with pause and resume control
+# FIXME use threading stop control instead as socket code is not optimum
 class InbandSensing(threading.Thread):
     def __init__(self, sense, f):
         super(InbandSensing, self).__init__(name='inband-sensing')
@@ -223,9 +223,8 @@ def main():
     inband_thread.start()
     # print 'stated in-band sensing'
     print("populating database for 30 minutes to build prediction model")
-    time.sleep(60 * 60)
+    time.sleep(30 * 60)
     while idle is False:
-        # print ("Do the next thing!!!")
         while not chan:
             decision_makers.gen_class_est(model1)
             # query database for set of frequency based on time occupancy usage
@@ -239,10 +238,8 @@ def main():
                 selected_freq = []
                 chan_result = []
                 wait_time = time.time()
-                # pause inband sensing
                 inband_thread.stop()
                 inband_thread.join()
-                # print 'in-band sensing is paused...'
                 # FIXME move short term database to storage to reinitialize prediction
                 for i in range(len(selected_chan)):
                     # print ('sending prompt...')
@@ -326,6 +323,7 @@ def main():
                 print("Occupancy estimate is ", occ_est)
                 occ_est = occ_est['channel']['occ_estimate']
                 idle_time_value = (1 - occ_est) * idle_time['period'] - t0
+                print('selected idle time is ', idle_time_value, ' while the mean idle time is ', idle_time['avg_idle_time'])
                 idle_times.append(
                     {'idle_time': idle_time_value, 'chan_id': chan_result[i]['id']})
                 print ('idle time is ', idle_time_value)
@@ -333,8 +331,8 @@ def main():
                 card = _db.get_collection('channels').find_one({'_id': chan_result[i]['id']})
                 # use best_chan to generate wait time exponential distro
                 idle_time_prob = 0
-                # get the probability of wait time distro within 9 seconds and 1 minute 30 secs
-                for j in range(9, 90):
+                # get the probability of wait time distro within 5 seconds and 1 minute 30 secs
+                for j in range(5, 90):
                     idle_time_prob += (1 / chan_distro['avg_idle_time']) * math.exp(
                         -(j / chan_distro['avg_idle_time']))
                 print("Idle time probability is ", idle_time_prob, " for channel ", chan_result[i]['id'])
@@ -342,7 +340,7 @@ def main():
         # print odds
         # select longest idle time or any best channel
         if len(idle_times) > 0:
-            print (idle_times)
+            # print (idle_times)
             if len(idle_times) > 1:
                 chan_id = functools.reduce(select_max, idle_times)
                 selected_idle_time = chan_id['idle_time']
@@ -350,24 +348,24 @@ def main():
             else:
                 selected_idle_time = idle_times[0]['idle_time']
                 chan_id = idle_times[0]['chan_id']
+        elif len(odds) > 0:
+            result = functools.reduce(select_least, odds)
+            chan_id = result['chan_id']
+            selected_idle_time = _DEFAULT_WAIT_TIME
         else:
-            if len(odds) > 0:
-                result = functools.reduce(select_least, odds)
-                chan_id = result['chan_id']
-                selected_idle_time = _DEFAULT_WAIT_TIME
-            else:
-                print ('unexpected as channel set is not empty, FIXME!!!')
+            print ('unexpected as channel set is not expected to be empty, FIXME!!!')
 
         print ('Selected channel is ', chan_id)
         if chan_id is None:
             chan = False
         else:
-            # prompt transmission for remaining seconds
+            # prompt transmission for remaining idle time for a periodic channel or default_wait_time for stochastic channel
             channel = _db.get_collection('channels').find_one({'_id': chan_id})
             new_freq = (channel['channel']['fmax'] + channel['channel']['fmin']) / 2.0
 
             msg = utils.formatmsg('NEW_FREQ={}'.format(new_freq))
             rf_frontend.send(msg.encode('utf-8'))
+            # FIXME ensure a proper socket connection as while loop leads to a deadlock of the server and client for different communnication
             while rf_frontend.recv(len('NEW_FREQ={}'.format(new_freq))) != 'NEW_FREQ={}'.format(new_freq).encode('utf-8'):
                 rf_frontend.send(msg.encode('utf-8'))
 
@@ -386,6 +384,7 @@ def main():
             msg = utils.formatmsg('STOP_COMM')
             # print msg
             rf_frontend.sendall(msg.encode('utf-8'))
+            # FIXME ensure a proper socket connection as while loop leads to a deadlock of the server and client for different communnication
             while rf_frontend.recv(len('STOP_COMM')) != 'STOP_COMM'.encode('utf-8'):
                 rf_frontend.sendall(msg.encode('utf-8'))
             # check if transmission has ended
@@ -393,7 +392,6 @@ def main():
             if len(msglen) > 0:
                 msg = rf_frontend.recv(int(msglen.decode('utf-8')))
                 rf_frontend.send(msg)
-                # print("HI", msg)
                 if msg.split(b'=')[1] == 'True'.encode('utf-8'):
                     idle = True
     # halt communication system
