@@ -217,7 +217,9 @@ def update_random():
             time_occ_prob = get_best_median_channs.get_best_channels(its)
 
             # update channels collection
-            _db.get_collection('channels').find_one_and_update({'_id': chan['_id']}, {'best_channel': time_occ_prob})
+            query = {'channel.fmin': chan['channel']['fmin'], 'channel.fmax': chan['channel']['fmax']}
+            _db.get_collection('channels').find_one_and_update(query, {'$set': {'best_channel': time_occ_prob}})
+            
 
         return True
     else:
