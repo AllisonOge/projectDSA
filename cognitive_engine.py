@@ -15,13 +15,13 @@ IP_ADDRESS = '10.0.0.1'
 SENSOR_PORT = 12345
 RF_PORT = 12347
 
-_MAX_DUTY_CYCLE = 0.4
+_MAX_DUTY_CYCLE = 0.6
 
 myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
 _freq_array = utils.get_freq()
 
-_DEFAULT_WAIT_TIME = 7
+_DEFAULT_WAIT_TIME = 6.0
 HEADERSIZE = 10
 
 
@@ -100,15 +100,16 @@ def select_max(prev, curr):
     else:
         return prev
 
-def select_best(obj):
-    if obj['card']['best_channel'] > 0.6:
-        return obj
-
 def select_least(prev, obj):
-    # select stochastic channels of idle prob greater than 60%
-    if obj['card']['best_channel'] > 0.6:
+    try:
         # pick the best idle time distro of lesser prob of exponential idle time
         if obj['idle_time_prob'] < prev['idle_time_prob']:
+            return obj
+        else:
+            return prev
+    except KeyError:
+        # pick the best time occupancy probability is higher
+        if obj['best_channel'] > prev['best_channel']:
             return obj
         else:
             return prev
@@ -122,32 +123,21 @@ def main():
     # application initialization
     print "Application is initializing..."
     sense, rf_frontend = initialization()
+    # wait for prompt to initialize DSA mode
+    while input('Switch to DSA: ').lower() != 'y':
+        print 'Enter a valid input'
+    # prompt rf_frontends to switch to DSA mode
+
+    # # populate database for the short term prediction and classification
+    print "populating database for 30 minutes"
+    time.sleep(30 * 60)
     inband_thread = threading.Thread(target=inband_sensing, args=[sense, lambda: pause], name='inband-sensing')
     inband_thread.start()
     # print 'stated in-band sensing'
     while idle is False:
         while not chan:
-            notempty = decision_makers.gen_class_est()
-            # # populate database for the first time
-            if notempty is False:
-                print "populating database for 30 minutes"
-                time.sleep(30 * 60)
-                # i = 0
-                # while i < _counts:
-                #     for freq in _freq_array:
-                #         msg = formatmsg(freq)
-                #         # print msg
-                #         sense.sendall(msg.encode('utf-8'))
-                #         while sense.recv(len(freq)) != freq:
-                #             sense.sendall(msg.encode('utf-8'))
-                #     i += 1
-                #     print '\rCreating database from default channel set for {c} number of times... {p:.2f}%'.format(
-                #         c=_counts,
-                #         p=(1.0 * i / _counts) * 100),
-                # decision_makers.gen_class_est()
-                # print
+            decision_makers.gen_class_est()
 
-            # query database for set of frequency based on time occupancy usage
             filt = [{'$project': {'channel': 1, 'selected': {'$lte': ['$channel.occ_estimate', _max_duty_cycle]}}},
                     {'$match': {'selected': True}}]
             selected_chan = list(_db.get_collection('channels').aggregate(filt))
@@ -243,9 +233,9 @@ def main():
                 card = _db.get_collection('channels').find_one({'_id': chan_result[i]['id']})
                 # use best_chan to generate wait time exponential distro
                 idle_time_prob = 0
-                # get the probability of wait time distro within 9 seconds and 1 minute 30 secs
+                # get the probability of wait time distro within 5 seconds and 1 minute 30 secs
                 if chan_distro['avg_idle_time'] > 0:
-                    for j in range(9, 90):
+                    for j in range(5, 90):
                         idle_time_prob += (1 / chan_distro['avg_idle_time']) * math.exp(
                             -(j / chan_distro['avg_idle_time']))
                     print "Idle time probability is ", idle_time_prob, " for channel ", chan_result[i]['id']
@@ -262,27 +252,12 @@ def main():
                 chan_id = chan_id['chan_id']
             else:
                 chan_id = idle_times[0]['idle_time']
+        elif len(odds) > 0:
+            result = reduce(select_least, odds)
+            chan_id = result['chan_id']
+            selected_idle_time = _DEFAULT_WAIT_TIME
         else:
-            if len(odds) > 0:
-                if len(odds) > 1:
-                    result = reduce(select_least, odds)
-                    if result:
-                        chan_id = result['chan_id']
-                        selected_idle_time = _DEFAULT_WAIT_TIME
-                    else:
-                        result = map(select_best, odds)
-                        for i in range(len(result)):
-                            if result[i]:
-                                chan_id = result[i]['chan_id']
-                                selected_idle_time = 2.0
-                                break
-                            else:
-                                chan_id = None
-                else:
-                    chan_id = odds[0]['chan_id']
-                    selected_idle_time = 2.0
-            else:
-                print 'unexpected, FIXME!!!'
+            print 'unexpected, FIXME!!!'
 
         print 'Selected channel is ', chan_id
         if chan_id is None:
