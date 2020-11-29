@@ -144,12 +144,9 @@ class InbandSensing(threading.Thread):
 
     def run(self):
         if self.f is not None:
-            try:
-                # print f, freq_array
-                self.freq_array = list(filter(lambda x: x != str(self.f), self.freq_array))
-                print ("New set of frequencies are ", self.freq_array)
-            except ValueError:
-                print ("No such frequency is available in choices")
+            # print f, freq_array
+            self.freq_array = list(filter(lambda x: x != str(self.f), self.freq_array))
+            print ("New set of frequencies are ", self.freq_array)
         while self.__running.isSet():
             timestamp = time.time()
             # print ('Scanning frequencies.. ', self.freq_array)
@@ -352,6 +349,9 @@ def main():
             inband_thread.start()
             print ('started in-band sensing after {} seconds'.format(time.time() - wait_time))
         time.sleep(selected_idle_time)
+        # set long term database query to recently used channel
+        _max_duty_cycle = _db.get_collection('channels').find_one({'_id': chan_id})['channel']['occ_estimate']
+        db.rf_sensors.insert_one({'channel_id': chan_id, 'usage_time': selected_idle_time})
         if selected_idle_time > 5.0:
             inband_thread.stop()
             inband_thread.join()
