@@ -47,18 +47,6 @@ class BestMedianChannels:
         else:
             return 0
 
-
-def flatten(prev, curr):
-    return prev + curr
-
-
-def gen_seq(obj):
-    if obj['busy'] == True:
-        return 1
-    else:
-        return 0
-
-
 def db_gen_seq(id):
     filt = [
         {
@@ -82,85 +70,76 @@ def db_gen_seq(id):
     ]
     return list(_db.get_collection('sensor').aggregate(filt))
 
-
-def gen_class_est(model):
-    """in-band sequence generator, classification and occupancy estimation"""
-    channels = list(_db.get_collection('channels').find())
-    channels_distro = list(_db.get_collection('time_distro').find())
-    if len(channels) > 0 and len(channels) == len(channels_distro):
-        # print "Updating the traffic estimate for all channels"
-        # use only in_band sensing to classify channels
-        for channel in channels:
-            filt = [
-                {'$match': {'signal.channel': channel['_id'], 'in_band': True}},
-                {'$project': {
-                    'busy': {'$gt': [{'$subtract': ['$signal.amplitude', '$noise_floor']}, _THRESHOLD_DB]}}}]
-            if _db.get_collection('long_term') is not None:
-                bit_seq = list(_db.get_collection('long_term').aggregate(filt)) + db_gen_seq(channel['_id'])
-            else:
-                bit_seq = db_gen_seq(channel['_id'])
-            # classify bit sequence
-            bit_seq = list(map(gen_seq, bit_seq))
-            # print bit_seq
-            if len(bit_seq) >= _SAMPLE_LEN:
-                period = 1.0
-                if len(bit_seq) % _SAMPLE_LEN == 0:
-                    # print "Length of bit sequence", len(bit_seq)
-                    for i in range(len(bit_seq) // _SAMPLE_LEN):
-                        if 'traffic_classifier' not in locals():
-                            traffic_classifier = utils.TrafficClassification(_SAMPLE_LEN)
-                        # print("length of sequence is ", len(bit_seq[_SAMPLE_LEN * i:_SAMPLE_LEN * (i + 1)]))
-                        traffic_class, period = traffic_classifier.classify(
-                            bit_seq[_SAMPLE_LEN * i:_SAMPLE_LEN * (i + 1)])
-                        # print ("Hi", bit_seq[_SAMPLE_LEN * i:_SAMPLE_LEN * (i + 1)])
-                        bit_seq_pd = pd.DataFrame([bit_seq[_SAMPLE_LEN * i:_SAMPLE_LEN * (i + 1)]], dtype=int)
-                        # print(bit_seq_pd)
-                        model.predict(bit_seq_pd)
-                        if model.predict(bit_seq_pd) == 0:
-                            traffic_class = "STOCHASTIC"
-                            print("TRAFFIC IS STOCHASTIC")
-                        else:
-                            traffic_class = "PERIODIC"
-                            period = traffic_classifier.get_period()
-                            print("TRAFFIC IS PERIODIC with period ", period)
-
-                else:
-                    traffic_class = _db.get_collection('time_distro').find_one({'channel_id': channel['_id']})[
-                        'traffic_class']
-            else:
-                # default classifications
-                traffic_class = 'UNKNOWN'
-                period = 0.0
-
-            spc = functools.reduce(flatten, bit_seq)
-            # print len(spc), channel['channel']['counts']
-            newdc = float(spc) / float(channel['channel']['counts'])
-            # print 'new traffic estimate is ', newdc
-            query = {'channel.fmin': channel['channel']['fmin'], 'channel.fmax': channel['channel']['fmax']}
-            _db.get_collection('channels').find_one_and_update(query, {'$set': {'channel.occ_estimate': newdc}})
-            # update database
-            if _db.get_collection("time_distro") is None:
-                print('time distro has not being initialized yet, FIXME!!!')
-                pass
-            else:
-                if traffic_class == 'PERIODIC':
-                    _db.get_collection("time_distro").update_one({'channel_id': channel['_id']},
-                                                                 {'$set': {'period': period}})
-                # print traffic_class
-                _db.get_collection("time_distro").update_one({'channel_id': channel['_id']},
-                                                             {'$set': {'traffic_class': traffic_class}})
-
-        return True
-    else:
-        if len(channels) < 1:
-            print("Channel is empty, could not update occupancy!!!")
-        else:
-            print("New channel set, could not update occupancy!!!")
+def reset_time_distro():
+    if _db.get_collection('time_distro') is None:
         return False
+
+    if _db.get_collection('long_term') is None:
+        _db.get_collection('sensor').rename('long_term')
+    else:
+        if len(list(_db.get_collection('sensor').find())) > 0:
+            _db.get_collection('long_term').insert_many(list(_db.get_collection('sensor').find()))
+    _db.get_collection('sensor').drop()
+
+    channels = list(_db.get_collection('channels').find())
+    for channel in range(channels):
+        query = {'channel_id': channel['_id']}
+        updated_idle_times = _db.time_distro.find_one(query)['idle_times_long_term']
+        updated_idle_times = np.append(updated_idle_times, _db.time_distro.find_one({'channel_id': channel['id']})['idle_time_stats'])
+        _db.get_collection('time_distro').find_one_and_update(query,{'idle_times_long_term': updated_idle_times.tolist()})
+
+def gen_class_est(free_channel ,model):
+    """in-band sequence generator, classification and occupancy estimation"""
+    filt = [
+            {'$match': {'signal.channel': free_channel['id'], 'in_band': True}},
+            {'$project': {
+                'busy': {'$gt': [{'$subtract': ['$signal.amplitude', '$noise_floor']}, _THRESHOLD_DB]}}}]
+    if _db.get_collection('long_term') is not None:
+        bit_seq = list(_db.get_collection('long_term').aggregate(filt)) + db_gen_seq(free_channel['id'])
+    else:
+        bit_seq = db_gen_seq(free_channel['id'])
+    # classify bit sequence
+    bit_seq = list(map(lambda x: 1 if x['busy'] == True else 0, bit_seq))
+
+    # use last set of SAMPLE_LEN bit to classisfy channel
+    if len(bit_seq[-_SAMPLE_LEN:]) >= _SAMPLE_LEN:
+        traffic_classifier = utils.TrafficClassification(_SAMPLE_LEN)
+        # print("length of sequence is ", len(bit_seqbit_seq[-_SAMPLE_LEN:]))
+        traffic_class, period = traffic_classifier.classify(bit_seq[-_SAMPLE_LEN:])
+        bit_seq_pd = pd.DataFrame([bit_seq[-_SAMPLE_LEN:]], dtype=int)
+        # print(bit_seq_pd)
+        model.predict(bit_seq_pd)
+        if model.predict(bit_seq_pd) == 0:
+            traffic_class = "STOCHASTIC"
+            print("TRAFFIC IS STOCHASTIC")
+        else:
+            traffic_class = "PERIODIC"
+            period = traffic_classifier.get_period()
+            print("TRAFFIC IS PERIODIC with period ", period)
+    else:
+        # default classifications
+        traffic_class = 'UNKNOWN'
+        period = 0.0
+        return False
+
+    spc = functools.reduce(lambda x, y: y+x, bit_seq)
+    # print len(spc), len(bit_seq)
+    newdc = float(spc) / float(len(bit_seq))
+    # print 'new traffic estimate is ', newdc
+    query = {'_id': free_channel['id']}
+    _db.get_collection('channels').find_one_and_update(query, {'$set': {'channel.occ_estimate': newdc}})
+    # update database
+    if traffic_class == 'PERIODIC':
+        _db.get_collection("time_distro").update_one({'channel_id': free_channel['id']},
+                                                        {'$set': {'period': period}})
+    # print traffic_class
+    _db.get_collection("time_distro").update_one({'channel_id': free_channel['id']},
+                                                    {'$set': {'traffic_class': traffic_class}})
+    return True, {'traffic_class': traffic_class, 'period': period}
 
 
 def update_random():
-    """predict best 2 channels out of 3"""
+    """get idle times of channels"""
     channels = list(_db.get_collection('channels').find())
     if len(channels) > 0:
         # print "idle time prediction of all channels"
@@ -247,7 +226,7 @@ def return_radio_chans(result):
 
 def get_t0(id):
     bit_seq = db_gen_seq(id)
-    bit_seq = list(map(gen_seq, bit_seq)[::-1])
+    bit_seq = list(map(lambda x: 1 if x['busy'] == True else 0, bit_seq)[::-1])
     t0 = 0
     for i in range(len(bit_seq)):
         if bit_seq[0] != 0:

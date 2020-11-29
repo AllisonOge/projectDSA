@@ -25,7 +25,7 @@ myclient = MongoClient('mongodb://127.0.0.1:27017/')
 _db = myclient.projectDSA
 _freq_array = utils.get_freq()
 
-_DEFAULT_WAIT_TIME = 6.0
+_DEFAULT_WAIT_TIME = 2.0
 HEADERSIZE = 10
 
 
@@ -190,25 +190,6 @@ class InbandSensing(threading.Thread):
         self.__stop = True
         self.__running.clear()
 
-def select_max(prev, curr):
-    if curr['idle_time'] > prev['idle_time']:
-        return curr
-    else:
-        return prev
-
-def select_least(prev, obj):
-    try:
-        # pick the best idle time distro of lesser prob of exponential idle time
-        if obj['idle_time_prob'] < prev['idle_time_prob']:
-            return obj
-        else:
-            return prev
-    except KeyError:
-        # idle time prob above 50%
-        if obj['card']['best_channel'] > prev['card']['best_channel']:
-            return obj
-        else:
-            return prev
 
 
 def main():
@@ -232,11 +213,10 @@ def main():
     inband_thread = InbandSensing(sense, None)
     inband_thread.start()
     # print 'stated in-band sensing'
-    print("populating database for 1 minute to build prediction model")
-    time.sleep(1 * 60)
+    print("populating database for 2 minute to build prediction model")
+    time.sleep(2 * 60)
     while idle is False:
         while not chan:
-            decision_makers.gen_class_est(model1)
             # query database for set of frequency based on time occupancy usage
             filt = [{'$project': {'channel': 1, 'selected': {'$lte': ['$channel.occ_estimate', _max_duty_cycle]}}},
                     {'$match': {'selected': True}}]
@@ -246,10 +226,11 @@ def main():
                 print(len(selected_chan), "channel{} selected".format(utils.txtformat(len(selected_chan))))
                 # sense selected channels to build prediction database and for free channel
                 selected_freq = []
-                chan_result = []
+                free_channels = np.array([])
                 wait_time = time.time()
                 inband_thread.stop()
                 inband_thread.join()
+                decision_makers.reset_time_distro()
                 # FIXME move short term database to storage to reinitialize prediction
                 for i in range(len(selected_chan)):
                     # print ('sending prompt...')
@@ -287,11 +268,9 @@ def main():
                     check = decision_makers.return_radio_chans(msg)
                     if check['state'] == 'free':
                         chan = True
-                        chan_result.append(check)
-                        if len(chan_result) >= int(2.0 / 3.0 * len(selected_chan)):
+                        free_channels = np.append(free_channels, check)
+                        if len(free_channels) >= int(2.0 / 3.0 * len(selected_chan)):
                             break
-
-                decision_makers.gen_class_est(model1)
                 # is a radio channel free
                 # print chan_result
                 if chan == True:
@@ -310,104 +289,90 @@ def main():
         if _max_duty_cycle > _MAX_DUTY_CYCLE:
             _max_duty_cycle -= 0.1
         # traffic classification and prediction
-        odds = []
-        idle_times = []
-        for i in range(len(chan_result)):
-            # print chan_result[i]['id']
-            query = {'$match': {'channel_id': chan_result[i]['id']}}
-            chan_distro = _db.get_collection('time_distro').find_one(query['$match'])
-            # print chan_distro
-            if chan_distro['traffic_class'] == 'PERIODIC':
-                filt = {'channel_id': chan_result[i]['id']}
-                idle_time = _db.get_collection('time_distro').find_one(filt)
-                # get time per bit from utils collection
-                if _db.get_collection('utils'):
-                    sec_per_bit = list(_db.get_collection('utils').find())[0]['sec_per_bit']
-                else:
-                    # assume 1 second
-                    sec_per_bit = 1
-                # find t0 which is the time between the last sensed bit and the previous bit
-                t0 = decision_makers.get_t0(chan_result[i]['id']) * sec_per_bit
-                # compute idle time as (1-occ_est)*period - t0
-                occ_est = _db.get_collection('channels').find_one(filt)
-                print("Occupancy estimate is ", occ_est)
-                occ_est = occ_est['channel']['occ_estimate']
-                idle_time_value = (1 - occ_est) * idle_time['period'] - t0
-                print('selected idle time is ', idle_time_value, ' while the mean idle time is ', idle_time['avg_idle_time'])
-                idle_times.append(
-                    {'idle_time': idle_time_value, 'chan_id': chan_result[i]['id']})
-                print ('idle time is ', idle_time_value)
-            else:
-                card = _db.get_collection('channels').find_one({'_id': chan_result[i]['id']})
-                if chan_distro['avg_idle_time'] != 0:
-                    # use best_chan to generate wait time exponential distro
-                    idle_time_prob = 0
-                    # get the probability of wait time distro within 5 seconds and 1 minute 30 secs
-                    for j in range(5, 90):
+        idle_time_prob_arr = np.array([])
+        idle_times_arr = np.array([])
+        for i in range(len(free_channels)):
+            sec_per_bit = list(_db.get_collection('utils').find())[0]['sec_per_bit']
+            # find t0 which is the time between the last sensed bit and the previous bit
+            t0 = decision_makers.get_t0(free_channels[i]['id']) * sec_per_bit
+            filt = {"channel_id": free_channels[i]['id']}
+            successful, result = decision_makers.gen_class_est(free_channels[i], model1)
+            if successful:
+                chan_distro = _db.get_collection("time_distro").find_one(filt)
+                if result['traffic_class'] == "STOCHASTIC":
+                    if chan_distro['avg_idle_time'] == 0:
+                        free_channels = np.delete(free_channels, {'id': free_channels[i]['id'], 'state': 'free'})
+                    # get the probability of wait time distro within time before sensing free channel avg wait time
+                    for j in range(t0, chan_distro["avg_idle_time"]):
                         idle_time_prob += (1 / chan_distro['avg_idle_time']) * math.exp(
                             -(j / chan_distro['avg_idle_time']))
-                    print("Idle time probability is ", idle_time_prob, " for channel ", chan_result[i]['id'])
-                    odds.append({'card': card, 'idle_time_prob': idle_time_prob, 'chan_id': chan_result[i]['id']})
+                    print("Idle time probability of free channel is ", idle_time_prob, " for channel ", free_channels[i]['id'])
+                    idle_time_prob_arr = np.append( idle_time_prob_arr, {'idle_time_prob': idle_time_prob, 'chan_id': free_channels[i]['id'], "idle_time": idle_time_prob*_DEFAULT_WAIT_TIME})
                 else:
-                    odds.append({'card': card, 'chan_id': chan_result[i]['id']})
-
-        # print odds
-        # select longest idle time or any best channel
-        if len(idle_times) > 0:
-            # print (idle_times)
-            if len(idle_times) > 1:
-                chan_id = functools.reduce(select_max, idle_times)
-                selected_idle_time = chan_id['idle_time']
-                chan_id = chan_id['chan_id']
+                    # compute idle time as (1-occ_est)*period - t0
+                    occ_est = _db.get_collection('channels').find_one(filt)['channel']['occ_estimate']
+                    print("Occupancy estimate is ", occ_est)
+                    idle_time_value = (1 - occ_est) * result['period'] - t0
+                    print('idle time of free channel is ', idle_time_value)
+                    print ('idle time is ', idle_time_value, " for channel ", free_channels[i]['id'])
+                    idle_times_arr = np.append(idle_times_arr,
+                        {'idle_time': idle_time_value, 'chan_id': free_channels[i]['id']})
             else:
-                selected_idle_time = idle_times[0]['idle_time']
-                chan_id = idle_times[0]['chan_id']
-        elif len(odds) > 0:
-            result = functools.reduce(select_least, odds)
-            chan_id = result['chan_id']
-            selected_idle_time = _DEFAULT_WAIT_TIME
+                # accumulate idle times of all free channels
+                idle_times_arr = np.append(idle_times_arr, {'chan_id': free_channels[i]['id'], 'mean_idle_time': chan_distro['avg_idle_time']-t0})
+
+        # select best channel from free channels
+        if len(idle_times_arr) > 0:
+            # print (idle_times_arr)
+            best_channel = functools.reduce(lambda x, y: x if x['idle_time'] > y['idle_time'] else y, idle_times_arr)
+            selected_idle_time = best_channel['idle_time']
+            chan_id = best_channel['chan_id']
         else:
-            print ('unexpected as channel set is not expected to be empty, FIXME!!!')
+            best_channel = functools.reduce(lambda x, y: x if x['idle_time'] > y['idle_time'] else y, idle_time_prob_arr)
+            chan_id = best_channel['chan_id']
+            selected_idle_time = best_channel['idle_time'] or _DEFAULT_WAIT_TIME
 
         print ('Selected channel is ', chan_id)
-        if chan_id is None:
-            chan = False
-        else:
-            # prompt transmission for remaining idle time for a periodic channel or default_wait_time for stochastic channel
-            channel = _db.get_collection('channels').find_one({'_id': chan_id})
-            new_freq = (channel['channel']['fmax'] + channel['channel']['fmin']) / 2.0
+        if not chan_id:
+            chan = None
+            break
+        # prompt transmission for remaining idle time for a periodic channel or default_wait_time for stochastic channel
+        channel = _db.get_collection('channels').find_one({'_id': chan_id})
+        new_freq = (channel['channel']['fmax'] + channel['channel']['fmin']) / 2.0
 
-            msg = utils.formatmsg('NEW_FREQ={}'.format(new_freq))
+        msg = utils.formatmsg('NEW_FREQ={}'.format(new_freq))
+        rf_frontend_tx.send(msg.encode('utf-8'))
+        # FIXME ensure a proper socket connection as while loop leads to a deadlock of the server and client for different communnication
+        while rf_frontend_tx.recv(len('NEW_FREQ={}'.format(new_freq))) != 'NEW_FREQ={}'.format(new_freq).encode('utf-8'):
             rf_frontend_tx.send(msg.encode('utf-8'))
-            # FIXME ensure a proper socket connection as while loop leads to a deadlock of the server and client for different communnication
-            while rf_frontend_tx.recv(len('NEW_FREQ={}'.format(new_freq))) != 'NEW_FREQ={}'.format(new_freq).encode('utf-8'):
-                rf_frontend_tx.send(msg.encode('utf-8'))
 
-            print ("Transmitting for {} seconds".format(selected_idle_time))
+        print ("Transmitting for {} seconds".format(selected_idle_time))
+        if selected_idle_time > 5.0:
             inband_thread = InbandSensing(sense, new_freq)
             inband_thread.start()
             print ('started in-band sensing after {} seconds'.format(time.time() - wait_time))
-            time.sleep(selected_idle_time)
+        time.sleep(selected_idle_time)
+        if selected_idle_time > 5.0:
             inband_thread.stop()
             inband_thread.join()
             inband_thread = InbandSensing(sense, None)
             inband_thread.start()
             print ("in-band sensing has started")
-            chan_id = None
-            chan = False
-            msg = utils.formatmsg('STOP_COMM')
-            # print msg
+        chan_id = None
+        chan = False
+        msg = utils.formatmsg('STOP_COMM')
+        # print msg
+        rf_frontend_tx.sendall(msg.encode('utf-8'))
+        # FIXME ensure a proper socket connection as while loop leads to a deadlock of the server and client for different communnication
+        while rf_frontend_tx.recv(len('STOP_COMM')) != 'STOP_COMM'.encode('utf-8'):
             rf_frontend_tx.sendall(msg.encode('utf-8'))
-            # FIXME ensure a proper socket connection as while loop leads to a deadlock of the server and client for different communnication
-            while rf_frontend_tx.recv(len('STOP_COMM')) != 'STOP_COMM'.encode('utf-8'):
-                rf_frontend_tx.sendall(msg.encode('utf-8'))
-            # check if transmission has ended
-            msglen = rf_frontend_tx.recv(HEADERSIZE)
-            if len(msglen) > 0:
-                msg = rf_frontend_tx.recv(int(msglen.decode('utf-8')))
-                rf_frontend_tx.send(msg)
-                if msg.split(b'=')[1] == 'True'.encode('utf-8'):
-                    idle = True
+        # check if transmission has ended
+        msglen = rf_frontend_tx.recv(HEADERSIZE)
+        if len(msglen) > 0:
+            msg = rf_frontend_tx.recv(int(msglen.decode('utf-8')))
+            rf_frontend_tx.send(msg)
+            if msg.split(b'=')[1] == 'True'.encode('utf-8'):
+                idle = True
     # halt communication system
     print ("End of Communication..., DONE!")
     inband_thread.stop()
