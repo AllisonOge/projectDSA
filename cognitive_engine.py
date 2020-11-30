@@ -213,78 +213,68 @@ def main():
     print("populating database for 2 minute to build prediction model")
     time.sleep(2 * 60)
     while idle is False:
+        wait_time = time.time()
+        inband_thread.stop()
+        inband_thread.join()
+        decision_makers.reset_time_distro()
         while not chan:
             # query database for set of frequency based on time occupancy usage
             filt = [{'$project': {'channel': 1, 'selected': {'$lte': ['$channel.occ_estimate', _max_duty_cycle]}}},
                     {'$match': {'selected': True}}]
             selected_chan = list(_db.get_collection('channels').aggregate(filt))
-            # check if set of channel is not empty
-            if len(selected_chan) > 0:
-                print(len(selected_chan), "channel{} selected".format(utils.txtformat(len(selected_chan))))
-                # sense selected channels to build prediction database and for free channel
-                selected_freq = []
-                free_channels = np.array([])
-                wait_time = time.time()
-                inband_thread.stop()
-                inband_thread.join()
-                decision_makers.reset_time_distro()
-                # FIXME move short term database to storage to reinitialize prediction
-                for i in range(len(selected_chan)):
-                    # print ('sending prompt...')
-                    msg = utils.formatmsg('check')
-                    # print(msg)
+            print(len(selected_chan), "channel{} selected".format(utils.txtformat(len(selected_chan))))
+            # sense selected channels to build prediction database and for free channel
+            selected_freq = np.array([])
+            free_channels = np.array([])
+            for i in range(len(selected_chan)):
+                # print ('sending prompt...')
+                msg = utils.formatmsg('check')
+                # print(msg)
+                sense.sendall(msg.encode('utf-8'))
+                while sense.recv(len('check')) != 'check'.encode('utf-8'):
                     sense.sendall(msg.encode('utf-8'))
-                    while sense.recv(len('check')) != 'check'.encode('utf-8'):
-                        sense.sendall(msg.encode('utf-8'))
-                    # print('prompt sent!')
-                    centre_freq = (selected_chan[i]['channel']['fmax'] + selected_chan[i]['channel']['fmin']) / 2.0
-                    msg = utils.formatmsg(str(centre_freq))
-                    print (msg)
+                # print('prompt sent!')
+                centre_freq = (selected_chan[i]['channel']['fmax'] + selected_chan[i]['channel']['fmin']) / 2.0
+                msg = utils.formatmsg(str(centre_freq))
+                print (msg)
+                sense.sendall(msg.encode('utf-8'))
+                while sense.recv(len(str(centre_freq))) != str(centre_freq).encode('utf-8'):
+                    print (sense.recv(len(str(centre_freq))), str(centre_freq).encode('utf-8'))
                     sense.sendall(msg.encode('utf-8'))
-                    while sense.recv(len(str(centre_freq))) != str(centre_freq).encode('utf-8'):
-                        print (sense.recv(len(str(centre_freq))), str(centre_freq).encode('utf-8'))
-                        sense.sendall(msg.encode('utf-8'))
 
-                    selected_freq.append(centre_freq)
-                    # get result of sensed channel from sensor
-                    msglen = sense.recv(HEADERSIZE)
-                    if msglen != ''.encode('utf-8'):
-                        msg = sense.recv(int(msglen.decode('utf-8')))
-                        # custom flushing hack
-                        try:
-                            sense.settimeout(.2)
-                            msglen = sense.recv(HEADERSIZE)
-                            msg = sense.recv(int(msglen.decode('utf-8')))  # throw value error when empty
-                        except socket.timeout:
-                            pass
-                        sense.settimeout(None)
-                        # print msg
-                        sense.sendall(msg)
-                        msg = pickle.loads(msg, encoding='bytes')
-                        # print (msg)
-                    check = decision_makers.return_radio_chans(msg)
-                    if check['state'] == 'free':
+                selected_freq = np.append(selected_freq, centre_freq)
+                # get result of sensed channel from sensor
+                msglen = sense.recv(HEADERSIZE)
+                if msglen != ''.encode('utf-8'):
+                    msg = sense.recv(int(msglen.decode('utf-8')))
+                    # custom flushing hack
+                    try:
+                        sense.settimeout(.2)
+                        msglen = sense.recv(HEADERSIZE)
+                        msg = sense.recv(int(msglen.decode('utf-8')))  # throw value error when empty
+                    except socket.timeout:
+                        pass
+                    sense.settimeout(None)
+                    # print msg
+                    sense.sendall(msg)
+                    msg = pickle.loads(msg, encoding='bytes')
+                    # print (msg)
+                    result = decision_makers.return_radio_chans(msg)
+                    if result['state'] == 'free':
                         chan = True
-                        free_channels = np.append(free_channels, check)
+                        free_channels = np.append(free_channels, result)
                         if len(free_channels) >= int(2.0 / 3.0 * len(selected_chan)):
                             break
-                # is a radio channel free
-                # print chan_result
-                if chan == True:
-                    break
-            else:
+            # is any radio channel free
+            if not chan and _max_duty_cycle < 1.0:
                 # check if no channel is free
-                print("No channel available!!!",)
-                # print 'previous threshold is ', _max_duty_cycle,
-                if _max_duty_cycle > 0.9:
-                    print("Querying the entire database channel set!!!")
-                else:
-                    # increase by 10%
-                    _max_duty_cycle += 0.1
+                print("No channel available at threshold of ", _max_duty_cycle)
+                # increase by 10%
+                _max_duty_cycle += 0.1
                 print('threshold for first set of channels is now ', _max_duty_cycle)
 
         if _max_duty_cycle > _MAX_DUTY_CYCLE:
-            _max_duty_cycle -= 0.1
+            _max_duty_cycle = _MAX_DUTY_CYCLE
         # traffic classification and prediction
         idle_time_prob_arr = np.array([])
         idle_times_arr = np.array([])
@@ -294,8 +284,8 @@ def main():
             t0 = decision_makers.get_t0(free_channels[i]['id']) * sec_per_bit
             filt = {"channel_id": free_channels[i]['id']}
             successful, result = decision_makers.gen_class_est(free_channels[i], model1)
+            chan_distro = _db.get_collection("time_distro").find_one(filt)
             if successful:
-                chan_distro = _db.get_collection("time_distro").find_one(filt)
                 if result['traffic_class'] == "STOCHASTIC":
                     if chan_distro['avg_idle_time'] == 0:
                         free_channels = np.delete(free_channels, {'id': free_channels[i]['id'], 'state': 'free'})
@@ -304,13 +294,13 @@ def main():
                         idle_time_prob += (1 / chan_distro['avg_idle_time']) * math.exp(
                             -(j / chan_distro['avg_idle_time']))
                     print("Idle time probability of free channel is ", idle_time_prob, " for channel ", free_channels[i]['id'])
-                    idle_time_prob_arr = np.append( idle_time_prob_arr, {'idle_time_prob': idle_time_prob, 'chan_id': free_channels[i]['id'], "idle_time": idle_time_prob*_DEFAULT_WAIT_TIME})
+                    idle_time_prob_arr = np.append( idle_time_prob_arr, {'chan_id': free_channels[i]['id'],  'idle_time_prob': idle_time_prob, "idle_time": idle_time_prob*_DEFAULT_WAIT_TIME})
                 else:
                     # compute idle time as (1-occ_est)*period - t0
                     occ_est = _db.get_collection('channels').find_one(filt)['channel']['occ_estimate']
                     print("Occupancy estimate is ", occ_est)
                     idle_time_value = (1 - occ_est) * result['period'] - t0
-                    print('idle time of free channel is ', idle_time_value)
+                    print('idle time of free channel is ', idle_time_value, " compared to mean idle time of ", chan_distro['avg_idle_time'])
                     print ('idle time is ', idle_time_value, " for channel ", free_channels[i]['id'])
                     idle_times_arr = np.append(idle_times_arr,
                         {'idle_time': idle_time_value, 'chan_id': free_channels[i]['id']})
@@ -321,13 +311,13 @@ def main():
         # select best channel from free channels
         if len(idle_times_arr) > 0:
             # print (idle_times_arr)
-            best_channel = functools.reduce(lambda x, y: x if x['idle_time'] > y['idle_time'] else y, idle_times_arr)
-            selected_idle_time = best_channel['idle_time']
-            chan_id = best_channel['chan_id']
+            best_channel_periodic = functools.reduce(lambda x, y: x if x['idle_time'] > y['idle_time'] else y, idle_times_arr)
+            selected_idle_time = best_channel_periodic['idle_time']
+            chan_id = best_channel_periodic['chan_id']
         else:
-            best_channel = functools.reduce(lambda x, y: x if x['idle_time'] > y['idle_time'] else y, idle_time_prob_arr)
-            chan_id = best_channel['chan_id']
-            selected_idle_time = best_channel['idle_time'] or _DEFAULT_WAIT_TIME
+            best_channel_stochastic = functools.reduce(lambda x, y: x if x['idle_time_prob'] > y['idle_time_prob'] else y, idle_time_prob_arr)
+            chan_id = best_channel_stochastic['chan_id']
+            selected_idle_time = best_channel_stochastic['idle_time'] or _DEFAULT_WAIT_TIME
 
         print ('Selected channel is ', chan_id)
         if not chan_id:
